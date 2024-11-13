@@ -1,0 +1,106 @@
+---
+title: "GEDE_explore"
+author: "Shaopeng"
+date: "2024-11-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("recount3")
+library("limma")
+library("SummarizedExperiment")  # assays function come from here
+source("GEDE_utils.R")
+```
+
+### Download data
+```{r recounts_data_explore}
+all_projects <- available_projects()
+human_projects = subset(all_projects, organism=="human")
+print(dim(human_projects))
+print(table(human_projects$project_home))
+# 32 gtex and 33 tcga and 8677 sra
+# However, those 3 groups have different labels for disease condition. Sra is hard to use, we keep the rest 2
+selected_proj = subset(human_projects, organism=="human" & project_home != "data_sources/sra")
+table(selected_proj$project)
+print(dim(selected_proj))
+# those matched conditions can be used to test model performance (?)
+```
+
+
+
+### build RSE object for target studies and save Rdata
+```{r use_tcga_luad_for_test}
+## TCGA LUAD and LUSC
+proj_luad <- subset(selected_proj, project == "LUAD" & project_home == "data_sources/tcga")
+proj_lusc <- subset(selected_proj, project == "LUSC" & project_home == "data_sources/tcga")
+
+# we can manually create RSE object from 1) raw matrix; 2) metadata; and 3) GRange from gene annotations
+# But not necessary for now, as we have many from recount3
+rse_luad <- create_rse(proj_luad)
+rse_lusc <- create_rse(proj_lusc)
+
+# merge them (make sure rows are equal)
+if (all(rownames(rse_luad) == rownames(rse_lusc))) {
+    rse_gene <- cbind(rse_luad, rse_lusc)
+} else {
+    stop("Row names (features) do not match between rse1 and rse2.")
+}
+
+print(dim(rse_gene))
+print(assayNames(rse_gene))
+print(assay(rse_gene)[1:3,1:3])
+# number of metadata is too high
+print(dim(rse_gene@colData))
+
+# filter non-coding gene
+if ("gene_type" %in% names(mcols(rowRanges(rse_gene)))) {
+  coding_genes <- rowRanges(rse_gene)$gene_type == "protein_coding"
+  rse_gene <- rse_gene[coding_genes, ]
+}
+
+# now 22k genes
+print(dim(rse_gene))
+print(table(rse_gene$tcga.gdc_cases.project.name))
+# release space
+rm(rse_luad, rse_lusc)
+
+# save data
+save(rse_gene, file="preped_gcta_luad_and_lusc.Rdata")
+```
+
+
+
+### Data prep
+```{r data_prep}
+# prepare data object: a list containing count and groups
+Data <- read_data(path="preped_gcta_luad_and_lusc.Rdata", metaVar = "tcga.gdc_cases.project.name", to_remove = NULL)
+str(Data)
+
+# DE preparation (no difference for the LUAD and LUSC case)
+Data <- metadata_binarize(Data, 'Lung Adenocarcinoma', 'Lung Squamous Cell Carcinoma', to_remove = NULL)
+Data <- dea_prep(Data)
+dim(Data$counts)
+
+Data <- gene_selection(Data)
+dim(Data$counts)
+
+# save file
+save(Data, file="TCGA_lung_data.RData")
+```
+
+
+
+
+### next chapter
+```{r aa}
+
+```
+
+
+
+
+### next chapter
+```{r ab}
+
+```

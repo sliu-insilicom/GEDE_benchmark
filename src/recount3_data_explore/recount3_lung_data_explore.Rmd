@@ -1,0 +1,106 @@
+---
+title: "explore_recount3_lung"
+author: "Shaopeng"
+date: "2024-10-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(pheatmap)
+```
+
+
+```{r exp_data}
+# load data
+data <- read.table("gtex.gene_sums.LUNG.G029", header = TRUE, sep = "\t", row.names = 1)
+dim(data) # 64837   655
+
+# remove empty rows/cols and those cols with small colsum
+data <- data[rowSums(data != 0) > 0, ]
+data <- data[, colSums(data != 0) > 0]
+dim(data) # 57558   655
+
+# total exp level
+column_sums <- log10(colSums(data))
+
+hist(column_sums, 
+     main = "Distribution of Column Sums", 
+     xlab = "log(colSum)", 
+     ylab = "Frequency", 
+     col = "lightblue", 
+     border = "black")
+
+# remove low depth data
+data <- data[, column_sums >= 9.5]
+dim(data) # 57558   633
+```
+
+```{r metadata}
+meta <- read.table("gtex.gtex.LUNG.MD", header=TRUE, sep="\t")
+head(meta)
+```
+# takes too long to run, so keep a proportion only
+
+``` {r pca}
+log_data = log2(data[1:dim(data)[1],1:30]+1)
+data_t = t(log_data)
+pca_result <- prcomp(data_t, center = TRUE, scale. = FALSE)
+summary(pca_result)
+plot(pca_result$x[, 1], pca_result$x[, 2], 
+     xlab = "PC1", ylab = "PC2", 
+     main = "PCA of Samples",
+     pch = 19, col = "blue")
+
+# heatmap
+data_t <- data_t[1:30, 1:1000]
+pheatmap(data_t, 
+         main = "Heatmap of Data", 
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         scale = "row")
+```
+
+
+One proteomic data from cBioportal
+```{r protein}
+pt <- read.table("data_protein_quantification.txt", header=TRUE, sep="\t", row.names = 1)
+dim(pt) #5538   84
+
+
+# dist. of values
+all_values <- unlist(pt)
+hist(all_values, 
+     main = "Distribution of All Values in Dataframe", 
+     xlab = "Values", 
+     ylab = "Frequency", 
+     col = "lightblue", 
+     border = "black")
+
+
+# total expression
+column_sums <- log10(colSums(pt))
+
+hist(column_sums, 
+     main = "Distribution of Column Sums", 
+     xlab = "log(colSum)", 
+     ylab = "Frequency", 
+     col = "lightblue", 
+     border = "black")
+
+
+# pca heatmap
+data_t = t(pt)
+pca_result <- prcomp(data_t, center = TRUE, scale. = FALSE)
+summary(pca_result)
+plot(pca_result$x[, 1], pca_result$x[, 2], 
+     xlab = "PC1", ylab = "PC2", 
+     main = "PCA of Samples",
+     pch = 19, col = "blue")
+
+# heatmap
+pheatmap(data_t, 
+         main = "Heatmap of Data", 
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         scale = "row")
+```
+
