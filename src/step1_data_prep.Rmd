@@ -11,17 +11,20 @@ library("recount3")
 library("limma")
 library("SummarizedExperiment")  # assays function come from here
 source("GEDE_utils.R")
+library(pheatmap)
 ```
 
+
+
 ### Download data
-```{r recounts_data_explore}
+```{r recounts_data_explore, message = FALSE}
 all_projects <- available_projects()
 human_projects = subset(all_projects, organism=="human")
 print(dim(human_projects))
 print(table(human_projects$project_home))
 # 32 gtex and 33 tcga and 8677 sra
 # However, those 3 groups have different labels for disease condition. Sra is hard to use, we keep the rest 2
-selected_proj = subset(human_projects, organism=="human" & project_home != "data_sources/sra")
+selected_proj = subset(human_projects, organism=="human" & project_home == "data_sources/tcga")
 table(selected_proj$project)
 print(dim(selected_proj))
 # those matched conditions can be used to test model performance (?)
@@ -30,7 +33,7 @@ print(dim(selected_proj))
 
 
 ### build RSE object for target studies and save Rdata
-```{r use_tcga_luad_for_test}
+```{r use_tcga_luad_for_test, message = FALSE}
 ## TCGA LUAD and LUSC
 proj_luad <- subset(selected_proj, project == "LUAD" & project_home == "data_sources/tcga")
 proj_lusc <- subset(selected_proj, project == "LUSC" & project_home == "data_sources/tcga")
@@ -66,35 +69,70 @@ print(table(rse_gene$tcga.gdc_cases.project.name))
 rm(rse_luad, rse_lusc)
 
 # save data
-save(rse_gene, file="preped_gcta_luad_and_lusc.Rdata")
+save(rse_gene, file="pooled_gcta_luad_and_lusc.Rdata")
 ```
 
 
 
-### Data prep
-```{r data_prep}
+### Examine the data
+```{r data_prep, message = FALSE}
 # prepare data object: a list containing count and groups
-Data <- read_data(path="preped_gcta_luad_and_lusc.Rdata", metaVar = "tcga.gdc_cases.project.name", to_remove = NULL)
+Data <- read_data(path="pooled_gcta_luad_and_lusc.Rdata", metaVar = "tcga.gdc_cases.project.name", to_remove = NULL)
 str(Data)
 
+
+### Examine samples and exclude outlier
+data <- Data$counts
+group <- Data$group
+print("Full loaded data")
+dim(data)
+
+# we don't remove empty rows/cols here: rows will be removed in next step, cols are kept for cross-data consistency
+
+
+# 1. by total expression
+col_sums <- colSums(data)
+boxplot(col_sums, main = "Boxplot of Total Expression by Sample", horizontal = TRUE)
+lower_bound <- quantile(col_sums, 0.25) - 1.5 * IQR(col_sums)
+upper_bound <- quantile(col_sums, 0.75) + 1.5 * IQR(col_sums)
+outlier_indices <- which(col_sums < lower_bound | col_sums > upper_bound)
+
+data <- data[, -outlier_indices]
+group <- group[-outlier_indices]
+print(paste0("Remove ", length(outlier_indices) ," low depth data"))
+dim(data)
+
+
+# 2. PCA check
+log_data = log2(data+0.01)
+data_t = t(log_data)
+pca_result <- prcomp(data_t, center = TRUE, scale. = FALSE)
+pca_summary <- summary(pca_result)
+top_10 <- pca_summary$importance[, 1:10]
+print(top_10)
+
+# plot PCA
+plot(pca_result$x[, 1], pca_result$x[, 2], 
+     xlab = "PC1", ylab = "PC2", 
+     main = "PCA of Samples",
+     pch = 19, col = "blue")
+```
+
+
+
+### call data_prep to make them ready for GEDE analysis
+```{r data_explore, message = FALSE}
 # DE preparation (no difference for the LUAD and LUSC case)
 Data <- metadata_binarize(Data, 'Lung Adenocarcinoma', 'Lung Squamous Cell Carcinoma', to_remove = NULL)
 Data <- dea_prep(Data)
 dim(Data$counts)
 
-Data <- gene_selection(Data)
+# selection and normalization should be after the outlier removing step
+Data <- gene_selection(Data, zero_threshold = 0.9)  # 0.9 is the default
 dim(Data$counts)
 
 # save file
 save(Data, file="TCGA_lung_data.RData")
-```
-
-
-
-
-### next chapter
-```{r aa}
-
 ```
 
 
