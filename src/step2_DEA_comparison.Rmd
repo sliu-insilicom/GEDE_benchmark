@@ -1,0 +1,31 @@
+---
+title: "GEDE_explore_DEA"
+author: "Shaopeng"
+date: "2024-11-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# library(GEDE)  # devtools pending
+library(xgboost)
+library(randomForest)
+library(Hmisc)
+library(limma)
+## Xing's note: due to a bug in Rfast, I decide to use pROC to compute AUC
+library(pROC)
+library(parallel)
+ncores <- detectCores()
+source("GEDE_utils.R")
+source("GEDE.R")
+```
+
+
+
+### Data prep
+```{r recounts_data_explore, message = FALSE}
+load("TCGA_lung_data.RData")
+
+# split to train/test/val
+
+```

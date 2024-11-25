@@ -1,6 +1,7 @@
 # ignore all Rdata
 *.Rdata
 *.rdata
-
+*.RData
+*.rData
 
 

@@ -114,3 +114,58 @@ gene_selection <- function(Data, zero_threshold = 0.9, # 1 means do not filter
   }
   return(Data)
 }
+
+
+
+
+# Check normality of rows (gene expression arcoss samples) of an input df
+check_normality <- function(Data, pvalue=0.05) {
+  # remove rows with no variation
+  filtered_data <- Data[apply(Data, 1, function(row) var(row) > 0), ]
+  # test for normality
+  shapiro_results <- apply(filtered_data, 1, function(row) shapiro.test(row)$p.value)
+  # adjust for multiple test
+  adjusted_pvalues <- p.adjust(shapiro_results, method = "fdr")
+  # extract sig genes
+  unnormal_genes <- adjusted_pvalues[which(adjusted_pvalues < pvalue)]
+  return(unnormal_genes)
+}
+
+
+
+###################################################################################################
+# train/test/valid split
+train_valid_test_split <- function(data_group, train_ratio = 0.4, include_valid = TRUE, valid_ratio = 2/3) {
+  all_index <- seq(1,length(data_group))
+  train_index <- createDataPartition(data_group, p=train_ratio, list=FALSE, times=1)
+  if (include_valid) {
+    valid_index <- createDataPartition(data_group[-train_index], p=valid_ratio, list=FALSE, times=1)
+    valid_index <- all_index[-train_index][valid_index]
+    test_index <- all_index[-c(train_index, valid_index)]
+    return(list(train_index = train_index, valid_index = valid_index, test_index = test_index))
+  } else {
+    test_index <- all_index[-train_index]
+    return(list(train_index = train_index, test_index = test_index))
+  }
+}
+
+
+###################################################################################################
+# small test sets
+sample_small_test <- function(group_test, nEach = 20, nIter = 50) {
+  stest_indices <- list()
+  for (i in 1:nIter) {
+    set.seed(i)
+    stest_index <- createDataPartition(group_test, p=nEach/length(group_test), 
+                                       list=FALSE, times=1)
+    stest_indices[[i]] <- stest_index
+  }
+  return(stest_indices)
+}
+
+
+#stest_indices <- sample_small_test(Data$group[test_index])
+#save(file = 'train_valid_test_index.RData', train_index, valid_index, test_index, stest_indices)
+
+
+

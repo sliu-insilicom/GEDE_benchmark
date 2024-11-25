@@ -12,6 +12,7 @@ library("limma")
 library("SummarizedExperiment")  # assays function come from here
 source("GEDE_utils.R")
 library(pheatmap)
+library(DESeq2)
 ```
 
 
@@ -104,7 +105,7 @@ dim(data)
 
 
 # 2. PCA check
-log_data = log2(data+0.01)
+log_data = log2(data+1)
 data_t = t(log_data)
 pca_result <- prcomp(data_t, center = TRUE, scale. = FALSE)
 pca_summary <- summary(pca_result)
@@ -112,6 +113,40 @@ top_10 <- pca_summary$importance[, 1:10]
 print(top_10)
 
 # plot PCA
+group_colors <- as.numeric(as.factor(group))  # Convert group categories to numeric
+color_palette <- rainbow(length(unique(group)))  # Create a color palette
+
+plot(pca_result$x[, 1], pca_result$x[, 2], 
+     xlab = "PC1", ylab = "PC2", 
+     main = "PCA of Samples",
+     pch = 19, col = color_palette[group_colors])
+
+legend("topright", legend = unique(group), 
+       col = color_palette, pch = 19, title = "Groups")
+
+
+
+# 3. check for normality at gene level
+df1 = log_data[ , which(group=="Lung Adenocarcinoma")]
+df2 = log_data[ , which(group=="Lung Squamous Cell Carcinoma")]
+
+abnormal_gene1 = check_normality(df1)
+abnormal_gene2 = check_normality(df2)
+
+plot({
+  qqnorm(df1['ENSG00000269713.7', ], main = "Q-Q Plot for ENSG00000269713.7")
+  #qqline(df1['ENSG00000269713.7', ], col = "red")   # this will 
+})
+
+dim(df1)
+length(abnormal_gene1)
+length(abnormal_gene2)
+
+
+# update Data for output
+Data$group <- group
+Data$counts <- data
+
 plot(pca_result$x[, 1], pca_result$x[, 2], 
      xlab = "PC1", ylab = "PC2", 
      main = "PCA of Samples",
@@ -131,14 +166,30 @@ dim(Data$counts)
 Data <- gene_selection(Data, zero_threshold = 0.9)  # 0.9 is the default
 dim(Data$counts)
 
+
+# let's see how normality works for voom transformation
+log_data = Data$voom_counts
+group = Data$group
+df1 = log_data[ , which(group=="groupLungAdenocarcinoma")]
+df2 = log_data[ , which(group=="groupLungSquamousCellCarcinoma")]
+
+abnormal_gene1 = check_normality(df1)
+abnormal_gene2 = check_normality(df2)
+dim(df1)
+length(abnormal_gene1)
+length(abnormal_gene2)
+
+plot({
+  qqnorm(df1['ENSG00000213240.8', ], main = "Q-Q Plot for ENSG00000213240.8")
+  #qqline(df1['ENSG00000213240.8', ], col = "red")
+})
+
 # save file
 save(Data, file="TCGA_lung_data.RData")
 ```
 
 
 
-
 ### next chapter
-```{r ab}
 
-```
+
