@@ -7,25 +7,103 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-# library(GEDE)  # devtools pending
-library(xgboost)
-library(randomForest)
-library(Hmisc)
-library(limma)
-## Xing's note: due to a bug in Rfast, I decide to use pROC to compute AUC
-library(pROC)
-library(parallel)
-ncores <- detectCores()
+library("recount3")
+library("limma")
+library("SummarizedExperiment")  # assays function come from here
 source("GEDE_utils.R")
-source("GEDE.R")
+library(pheatmap)
+library(DESeq2)
 ```
 
 
 
-### Data prep
-```{r recounts_data_explore, message = FALSE}
-load("TCGA_lung_data.RData")
+### explore potential datasets
+```{r explore_some_data, message = FALSE}
+# download data
+all_projects <- available_projects()
+selected_proj = subset(all_projects, organism=="human" & project_home == "data_sources/tcga")
+selected_proj <- selected_proj[selected_proj$n_samples>500, ]
 
-# split to train/test/val
+
+selected_vars = c("tcga.gdc_cases.demographic.race", "tcga.gdc_cases.demographic.gender", "tcga.gdc_cases.diagnoses.tumor_stage", "tcga.gdc_cases.exposures.cigarettes_per_day")
+
+# check dist. of those variables
+# for (keys in c(selected_proj$project)) {
+#   print(keys)
+#   proj_rse = subset(selected_proj, project == keys & project_home == "data_sources/tcga")
+#   rse_gene <- create_rse(proj_rse)
+#   print(dim(rse_gene))
+#   # check dist of variables
+#   for (temp_var in selected_vars) {
+#     print(temp_var)
+#     print(table(rse_gene[[temp_var]]))
+#   }
+# }
+
+# worth following:
+# 1. BRCA: subsample white vs black (900 white vs 200 black + 62 asian)
+# 2. gender for all except BRCA
+# 3. tumor stage (need binarize)
+# 4. LUAD: cig per day
+
+
+selected_vars = c("tcga.gdc_cases.demographic.race", "tcga.gdc_cases.demographic.gender", "tcga.gdc_cases.diagnoses.tumor_stage", "tcga.gdc_cases.exposures.cigarettes_per_day")
+
+
+
+### prep BRCA data
+Data_BRCA = pull_recount3_data(available_project = selected_proj, keyword="BRCA", group_vector = selected_vars)
+group = Data_BRCA$group
+counts = Data_BRCA$counts
+
+# downsample race: white 900 -> 300, and only keep 200 black
+table(Data_BRCA$group$tcga.gdc_cases.demographic.race)
+# use %in% instead of == to get rid of NA when facing NA == sth (returns NA)
+black_samples = row.names(group[group$tcga.gdc_cases.demographic.race %in% c("black or african american"), ])
+white_samples = row.names(group[group$tcga.gdc_cases.demographic.race %in% c("white"), ])
+# subsample white to 300
+set.seed(1234)
+white_samples <- sample(white_samples, 300)
+final_samples <- c(white_samples, black_samples)
+# new data
+downsampled_counts <- counts[, final_samples]
+downsampled_group <- group[final_samples, ]
+dim(downsampled_counts)
+dim(downsampled_group)
+
+Data_BRCA$group <- downsampled_group
+Data_BRCA$counts <- downsampled_counts
+rm(counts, group, downsampled_group, downsampled_counts)
+table(Data_BRCA$group$tcga.gdc_cases.demographic.race)
+
+# run DESeq2 on Data_BRCA for race: 191 vs 300 (downsample from 900)
+# return 2675 DEG with padj < 0.05, and log2fc > 0.5
+deg_BRCA_race <- run_DESeq2(df_count=Data_BRCA$counts, df_meta=Data_BRCA$group, 
+                            single_condition="tcga.gdc_cases.demographic.race")
+
+
+save(Data_BRCA, file="step2.1_BRCA_race_for_DEG.Rdata")
+
+
+
+### prep LUAD data and run on gender
+# Data_LUAD = pull_recount3_data(available_project = selected_proj, keyword="LUAD", group_vector = selected_vars)
+# table(Data_LUAD$group$tcga.gdc_cases.demographic.gender)
+# 
+# # run DESeq2 on Data_LUAD for gender: 326 vs 275 
+# # return only 430 DEG with padj < 0.05, and log2fc > 0.5
+# deg_LUAD_gender <- run_DESeq2(df_count=Data_LUAD$counts, df_meta=Data_LUAD$group, 
+#                             single_condition="tcga.gdc_cases.demographic.gender")
 
 ```
+
+
+
+### Imputation on those data
+```{r imputation, message=FALSE}
+
+
+```
+
+
+

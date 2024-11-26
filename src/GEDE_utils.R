@@ -1,6 +1,8 @@
 # Stores all helper functions here for easier management
 # Format: function + description + source from GEDE folder
 print("GEDE_utils sourced!")
+library(DESeq2)
+library(EnhancedVolcano)
 # library(SummarizedExperiment)
 
 ###### from file: Original_data/data_prep.R
@@ -130,6 +132,81 @@ check_normality <- function(Data, pvalue=0.05) {
   unnormal_genes <- adjusted_pvalues[which(adjusted_pvalues < pvalue)]
   return(unnormal_genes)
 }
+
+
+
+
+# pull 1 dataset from recount3 by its keyword, e.g. "LUAD", "BRCA", and extract group variables
+# @parameter
+# available_project: project list obtained by recount3 available_project, has a fixed format
+# keyword: unique keyword to extract 1 database, e.g. "LUAD"
+# group_vector: a vector of clinical variables to keep as group variables
+
+pull_recount3_data <- function(available_project, keyword, group_vector) {
+  print(keyword)
+  print(group_vector)
+  proj_rse = subset(selected_proj, project == keyword & project_home == "data_sources/tcga")
+  rse_gene <- create_rse(proj_rse)
+  # filter non-coding gene
+  if ("gene_type" %in% names(mcols(rowRanges(rse_gene)))) {
+    coding_genes <- rowRanges(rse_gene)$gene_type == "protein_coding"
+    rse_gene <- rse_gene[coding_genes, ]
+  }
+  # dim
+  print(dim(rse_gene))
+  # extract df and group information
+  counts = compute_read_counts(rse_gene)
+  groups <- as.data.frame(colData(rse_gene)[, group_vector])
+  # return a list object
+  return(list(group = groups, counts = counts))
+}
+
+
+
+
+# run DESeq2 for a raw count matrix, metadata df, and metadata colname
+# need a binary "single_condition"
+run_DESeq2 <- function(df_count, df_meta, single_condition, pvalue=0.05, log2fc=0.5) {
+  # build object
+  dds <- DESeqDataSetFromMatrix(
+    countData = df_count,
+    colData = df_meta,
+    design = as.formula(paste0("~ ", single_condition))  # Specify the group variable
+  )
+  # filter low counts
+  dds <- dds[rowSums(counts(dds)) > 1000, ]  # Keep genes with a total count >1000, as we have hundreds of samples
+  # run DEG
+  dds <- DESeq(dds)
+  compare_conditions <- levels(as.factor(df_meta[[single_condition]]))
+  res <- results(dds, contrast = c(single_condition, compare_conditions[1], compare_conditions[2]))
+  print(summary(res))
+  # Filter significant genes
+  significant_genes  <- res[!is.na(res$padj) & res$padj < pvalue & res$log2FoldChange>log2fc, ]
+  print(dim(significant_genes))
+  # make some plots
+  EnhancedVolcano(res,
+                  lab = rownames(res),                   # Gene labels
+                  x = 'log2FoldChange',                  # Fold change
+                  y = 'pvalue',                          # p-value
+                  title = 'Volcano Plot',
+                  pCutoff = pvalue,                        # P-value cutoff
+                  FCcutoff = log2fc                           # Fold change cutoff
+  )
+  plotMA(res, main = "MA Plot", ylim = c(-5, 5))
+  # return results
+  return(significant_genes)
+  
+}
+
+
+
+
+
+
+
+
+
+
 
 
 
