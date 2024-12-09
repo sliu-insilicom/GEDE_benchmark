@@ -1,6 +1,6 @@
 # Stores all helper functions here for easier management
 # Format: function + description + source from GEDE folder
-print("GEDE_utils sourced!")
+print("GEDE_data_prep sourced!")
 library(DESeq2)
 library(EnhancedVolcano)
 # library(SummarizedExperiment)
@@ -199,6 +199,22 @@ run_DESeq2 <- function(df_count, df_meta, single_condition, pvalue=0.05, log2fc=
 }
 
 
+
+# run limma for a voom transformed matrix, metadata vector (binary)
+run_limma <- function(df_transformed, meta_vector, pvalue=0.05, log2fc=0.5, betahat = 1) {
+  meta_vector <- factor(meta_vector)
+  design <- model.matrix(~ meta_vector)
+  fit <- lmFit(df_transformed, design)
+  fit2 <- eBayes(fit)
+  results <- topTable(fit2, number=Inf, sort.by="none", adjust.method="BH")
+  # add betahat for simulation
+  coefficients <- fit2$coefficients
+  combined_results <- cbind(results, Coefficients=coefficients)
+  # may adjust criteria later
+  DEGs <- which(combined_results$adj.P.Val < pvalue & abs(combined_results$Coefficients.meta_vector1) > betahat)
+  #selected_genes <- rownames(combined_results)[DEGs]
+  return(DEGs)
+}
 
 
 

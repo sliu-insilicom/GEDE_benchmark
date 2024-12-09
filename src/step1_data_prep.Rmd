@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 library("recount3")
 library("limma")
 library("SummarizedExperiment")  # assays function come from here
-source("GEDE_utils.R")
+source("GEDE_data_prep.R")
 library(pheatmap)
 library(DESeq2)
 ```

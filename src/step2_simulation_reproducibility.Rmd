@@ -1,0 +1,206 @@
+---
+title: "GEDE_explore_DEA"
+author: "Shaopeng"
+date: "2024-11-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("recount3")
+library("limma")
+library("SummarizedExperiment")  # assays function come from here
+source("GEDE_data_prep.R")
+source("GEDE_simulation.R")
+library(pheatmap)
+library(DESeq2)
+```
+
+
+
+### explore potential datasets
+```{r 1.prep_input_data, message = FALSE}
+# download data
+all_projects <- available_projects()
+selected_proj = subset(all_projects, organism=="human" & project_home == "data_sources/tcga")
+selected_proj <- selected_proj[selected_proj$n_samples>500, ]
+
+
+selected_vars = c("tcga.gdc_cases.demographic.race", "tcga.gdc_cases.demographic.gender", "tcga.gdc_cases.diagnoses.tumor_stage", "tcga.gdc_cases.exposures.cigarettes_per_day")
+
+
+# check dist. of those variables
+# for (keys in c(selected_proj$project)) {
+#   print(keys)
+#   proj_rse = subset(selected_proj, project == keys & project_home == "data_sources/tcga")
+#   rse_gene <- create_rse(proj_rse)
+#   print(dim(rse_gene))
+#   # check dist of variables
+#   for (temp_var in selected_vars) {
+#     print(temp_var)
+#     print(table(rse_gene[[temp_var]]))
+#   }
+# }
+
+# worth following:
+# 1. BRCA: subsample white vs black (900 white vs 200 black + 62 asian)
+# 2. gender for all except BRCA
+# 3. tumor stage (need binarize)
+# 4. LUAD: cig per day
+
+
+selected_vars = c("tcga.gdc_cases.demographic.race", "tcga.gdc_cases.demographic.gender", "tcga.gdc_cases.diagnoses.tumor_stage", "tcga.gdc_cases.exposures.cigarettes_per_day")
+
+
+
+### prep BRCA data
+Data_BRCA = pull_recount3_data(available_project = selected_proj, keyword="BRCA", group_vector = selected_vars)
+group = Data_BRCA$group
+counts = Data_BRCA$counts
+
+# downsample race: white 900 -> 300, and only keep 200 black
+table(Data_BRCA$group$tcga.gdc_cases.demographic.race)
+# use %in% instead of == to get rid of NA when facing NA == sth (returns NA)
+black_samples = row.names(group[group$tcga.gdc_cases.demographic.race %in% c("black or african american"), ])
+white_samples = row.names(group[group$tcga.gdc_cases.demographic.race %in% c("white"), ])
+# subsample white to 300
+set.seed(1234)
+white_samples <- sample(white_samples, 300)
+final_samples <- c(white_samples, black_samples)
+# new data
+downsampled_counts <- counts[, final_samples]
+downsampled_group <- group[final_samples, ]
+dim(downsampled_counts)
+dim(downsampled_group)
+
+Data_BRCA$group <- downsampled_group
+Data_BRCA$counts <- downsampled_counts
+rm(counts, group, downsampled_group, downsampled_counts)
+table(Data_BRCA$group$tcga.gdc_cases.demographic.race)
+
+# run DESeq2 on Data_BRCA for race: 191 vs 300 (downsample from 900)
+# return 2675 DEG with padj < 0.05, and log2fc > 0.5
+deg_BRCA_race <- run_DESeq2(df_count=Data_BRCA$counts, df_meta=Data_BRCA$group, 
+                            single_condition="tcga.gdc_cases.demographic.race")
+
+
+save(Data_BRCA, file="step2.1_BRCA_race_for_DEG.Rdata")
+
+
+
+### prep LUAD data and run on gender
+# Data_LUAD = pull_recount3_data(available_project = selected_proj, keyword="LUAD", group_vector = selected_vars)
+# table(Data_LUAD$group$tcga.gdc_cases.demographic.gender)
+# 
+# # run DESeq2 on Data_LUAD for gender: 326 vs 275 
+# # return only 430 DEG with padj < 0.05, and log2fc > 0.5
+# deg_LUAD_gender <- run_DESeq2(df_count=Data_LUAD$counts, df_meta=Data_LUAD$group, 
+#                             single_condition="tcga.gdc_cases.demographic.gender")
+
+```
+
+
+
+### Imputation on those data
+```{r 2.get_cov_matrix_and_simulation_parameters, message=FALSE}
+load("step2.1_BRCA_race_for_DEG.Rdata")  # this is the raw count matrix (transformed from recount3 matrix)
+
+# first transfer the data to the format as Xing previous use: count is voom transformed and group is a vector of variables 
+# as we did in step1 script
+Data <- Data_BRCA
+Data$raw_counts <- Data$counts
+Data$counts <- voom(Data$counts, plot = FALSE)$E
+Data$group <- Data$group$tcga.gdc_cases.demographic.race
+Data <- metadata_binarize(Data, "white", "black or african american")
+Data <- dea_prep(Data)
+
+
+Y <- Data$counts #voom transformed counts
+
+
+## randomly select 1,000 genes
+set.seed(12345)
+ngenes <- nrow(Y)
+genes.idx <- sample(ngenes, 1000)
+Y1 <- Y[genes.idx,]
+
+
+## Group-wise Outlier Winsorization
+Y1w <- Y1; out.n <- 0
+for (i in 1:nrow(Y1)){
+  o <- GrpHampel(Y1[i,], Grp=Data$group, nMAD=4, winsorize=TRUE, with.out.ids=TRUE)
+  Y1w[i,] <- o$X; out.n <- out.n+length(o$out.ids)
+}
+round(100*out.n/length(Y1w), 2) # 0.81% outliers were winsorized (replace extrame values by the boundary L and U)
+# Xing's data is 1.51% TCGA lung
+
+# For SL personal note: 
+# U = Xmed + nMAD * Xmad
+# L = Xmed - nMAD * Xmad
+# Xmed: Median of the Data
+# MAD: Median Absolute Deviation = median(|Xi - median(X)|)
+# Xmad: MAD of the Data
+
+
+
+
+## Get Cov matrix for the outlier-adjusted matrix
+CovY <- cov(t(Y1w))
+ee <- eigen(CovY, symmetric=TRUE)
+lambdas <- ee$values
+# SL note: kstar, optimal number of principal components to retain 
+kstar <- K.est(lambdas, l.remain=0, n=n1+n2, m=1000, method="vprop")  
+kstar #80    # TCGA lung 102
+# extract matrix for th 80 PC
+Tk <- ee$vectors[, 1:kstar]
+## estimate the first K eigenvalues
+n <- ncol(Y1w); m <- nrow(Y1w); mstar <- min(m, n-1)
+# sigma2 an estimate of the residual variance that is not captured by the first kstar principal components.
+sigma2 <- mstar/(m*(mstar-kstar)) *sum(lambdas[-(1:kstar)])
+# SL note: LK represents the adjusted eigenvalues (remove the contribution of the residual variance sigma2)
+Lk <- lambdas[1:kstar]-m/mstar*sigma2
+range(Lk); sigma2
+
+
+vp <- cumsum(lambdas)[1:120]/sum(lambdas)
+pdf("../output/screeplot1.pdf", height=6, width=6)
+plot(vp, type="l", xlab="Principal Components", ylab="Proportion of variance explained")
+points(vp, pch=19, cex=.5)
+abline(h=0.8, lty=2); points(x=kstar, y=vp[kstar], col=2, pch=19)
+dev.off()
+
+
+######################################################################
+## Select DEGs by Limma
+######################################################################
+Grp <- as.matrix(ifelse(Data$group=="groupwhite", 0, 1))
+colnames(Grp) <- "Grp"
+#o <- limma(Y1w, v=Grp)
+#DEGs <- which(o$adjP.Grp<0.05 & abs(o$betahat.Grp)>1)
+# updated limma DEG workflow
+# the code below needs DEG ordinal number (row number), not name, so output numbers here
+DEGs <- run_limma(df_transformed = Y1w, meta_vector=Grp, pvalue=0.05, betahat=0.5)
+length(DEGs) #169 with betahat 0.5, only 23 with betahat 1  (135 betahat 1 for lung)
+
+
+## create an object that contains all the estimated parameters. 
+# SL note: store mean exp for both conditions (only need beta1 dif for DEGs)
+beta0 <- rowMeans(Y1w); beta1 <- rep(0, m)
+for (j in DEGs) {
+  beta0[j] <- mean(Y1w[j, Grp==0])
+  ## Remember that groupwhite is the baseline group, so beta1
+  ## represents the groupblack
+  beta1[j] <- mean(Y1w[j, Grp==1]) -beta0[j]
+}
+oracle <- list(betahat=rbind(beta0=beta0, Grp=beta1),
+               Tk=Tk, K=kstar, Lk=lambdas[1:kstar], sigma2=sigma2)
+save(DEGs, oracle, file="sim_params.rda")
+
+```
+
+
+
+```{r 3.simulate_data, message=FALSE}
+
+
+```
