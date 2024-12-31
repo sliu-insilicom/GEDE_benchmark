@@ -1,0 +1,474 @@
+---
+title: "step3_run_simulation"
+output: html_document
+date: "2024-12-31"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(GEDE)
+library(xgboost)
+library(randomForest)
+library(Hmisc)
+library(limma)
+#ncores <- detectCores()
+ncores <- 32  # let's manually pick one
+load("sim_params.rda") #DEGs, oracle
+objs <- load("simdata.rda") 
+```
+
+
+
+### The use different methods to analyze them
+```{r 1_2.param_est_by_sim1, message=FALSE}
+# from script: simulations.r
+
+######################################################################
+## Parameter estimation (using sim1)
+######################################################################
+attach(sim1) #Ytrue, Y, Ym, Ymo, miss.idx, and out.idx
+
+
+E2S <- function(Est) Est$Tk%*%diag(Est$Lk)%*%t(Est$Tk) +Est$sigma2
+SigmaY <- oracle$Tk%*%diag(oracle$Lk)%*%t(oracle$Tk) +oracle$sigma2
+##
+myest.Y <- RobEst(Y, X=Grp, K.method="vprop")
+myest.Y.1gp <- RobEst(Y, K.method="vprop") #one-group case
+myest.Ym <- RobEst(Ym, X=Grp, K.method="vprop")
+myest.Ymo <- RobEst(Ymo, X=Grp, K.method="vprop")
+
+
+SigmaEsts.cov <- SigmaEsts.RobEst <- list()
+## Estimates based on sample cov. Note that these options are not available for Ym: (a) "everything", "all.obs", and "na.or.complete" are not available due to NAs, and(b) "complete.obs" is not available because (almost) no observation is complete. The ONLY available option is "pairwise.complete.obs".
+
+
+## compute the centered versions of Y, Ym, and Ymo
+X <- cbind(Intercept=rep(1, n), Grp)
+Yc <- lm.fit(X, Y)$residuals
+Ymc <- apply(Ym, 2, function(y) y-tapply(y, Grp, mean, na.rm=TRUE)[as.character(Grp)])
+Ymoc <- apply(Ymo, 2, function(y) y-tapply(y, Grp, mean, na.rm=TRUE)[as.character(Grp)])
+##
+SigmaEsts.cov$Y.1gp <- cov(Y) #one-grp case
+SigmaEsts.cov$Y <- cov(Yc)
+SigmaEsts.cov$Ym <- cov(Ymc, use="pairwise.complete.obs")
+SigmaEsts.cov$Ymo <- cov(Ymoc, use="pairwise.complete.obs")
+
+
+## RobEsts
+SigmaEsts.RobEst$Y.1gp <- E2S(myest.Y.1gp)
+SigmaEsts.RobEst$Y <- E2S(myest.Y)
+SigmaEsts.RobEst$Ym <- E2S(myest.Ym)
+SigmaEsts.RobEst$Ymo <- E2S(myest.Ymo)
+##
+rr.cov <- sapply(SigmaEsts.cov, function(S) rmse(S, SigmaY))
+rr.RobEst <- sapply(SigmaEsts.RobEst, function(S) rmse(S, SigmaY))
+cc.cov <- sapply(SigmaEsts.cov, function(S) cor(as.vector(S), as.vector(SigmaY)))
+cc.RobEst <- sapply(SigmaEsts.RobEst, function(S) cor(as.vector(S), as.vector(SigmaY)))
+
+
+## the first two columns are for cov(); second two columns are for RobEst()
+tab.est <- cbind(RMSE=rr.cov, Cor=cc.cov, RMSE=rr.RobEst, Cor=cc.RobEst); tab.est
+
+######################################################################
+## Performance of imputation based on Ym
+######################################################################
+
+
+## Tab.K, internal comparison of GEDE with different options, with
+## focus on K. Takes about 2~3 minutes.
+YF <- list(); tt <- list(); kk <- list()
+tt[["GEDE.REk"]] <- system.time({
+  o <- GEDE(Ym, X=Grp, nMAD=NULL)
+  YF[["GEDE.REk"]] <- o$Ystar
+})[["elapsed"]]; kk$GEDE.REk <- o$K
+##
+tt[["GEDE.REk.HD"]] <- system.time({
+  o <- GEDE(Ym, X=Grp, HD=TRUE, nMAD=NULL)
+  YF[["GEDE.REk.HD"]] <- o$Ystar
+})[["elapsed"]]; kk$GEDE.REk.HD <- o$K
+##
+tt[["GEDE.vprop"]] <- system.time({
+  o <- GEDE(Ym, X=Grp, K.method="vprop", nMAD=NULL)
+  YF[["GEDE.vprop"]] <- o$Ystar
+})[["elapsed"]]; kk$GEDE.vprop <- o$K
+##
+tt[["GEDE.vprop.HD"]] <- system.time({
+  o <- GEDE(Ym, X=Grp, K.method="vprop", HD=TRUE, nMAD=NULL)
+  YF[["GEDE.vprop.HD"]] <- o$Ystar
+})[["elapsed"]]; kk$GEDE.vprop.HD <- o$K
+##
+for (k in c(10, 50, 100, 120, 150)) {
+  mn <- paste0("GEDE.K", k)
+  tt[[mn]] <- system.time(YF[[mn]] <- GEDE(Ym, X=Grp, K=k, nMAD=NULL)$Ystar)[["elapsed"]]
+  kk[[mn]] <- k
+  ##
+  mn2 <- paste0(mn, ".HD")
+  tt[[mn2]] <- system.time(YF[[mn2]] <- GEDE(Ym, X=Grp, K=k, HD=TRUE, nMAD=NULL)$Ystar)[["elapsed"]]
+  kk[[mn2]] <- k
+}
+
+
+RMSE <- sapply(YF, function(yf) sqrt(mean((yf[miss.idx]-Ytrue[miss.idx])^2)))
+tab.K <- cbind(K=unlist(kk), CPU.Time=unlist(tt), RMSE=RMSE)
+## sort on K
+tab.K <- tab.K[order(tab.K[,"K"]),]
+## split the HD versions from the standard ones, and recombine them
+tab.K.1 <- tab.K[!grepl(".*HD", rownames(tab.K)),]
+tab.K.2 <- tab.K[grepl(".*HD", rownames(tab.K)), -1]
+tab.K <- cbind(tab.K.1, tab.K.2)
+tab.K
+
+## I am going to save GEDE.vprop.HD for later use
+rr.vprop.HD <- tab.K.2["GEDE.vprop.HD",]
+
+```
+
+
+```{r 3.use_subset_of_feature, message=FALSE}
+######################################################################
+## From now on, we will only use GEDE with the HD approach and vprop
+## option. Next table is about using a subset of features to predict
+## missing values
+######################################################################
+YF <- list(); tt <- list()
+Npred <- c(50, 100, 200, 400)
+for (npred in Npred) {
+  mn <- paste0("GEDE.npred", npred)
+  tt[[mn]] <- system.time(YF[[mn]] <- GEDE(Ym, X=Grp, predictors=1:npred, K.method="vprop", HD=TRUE, nMAD=NULL)$Ystar)[["elapsed"]]
+}
+RMSE <- sapply(YF, function(yf) sqrt(mean((yf[miss.idx]-Ytrue[miss.idx])^2)))
+tab.npred <- cbind(npred=Npred, CPU.Time=unlist(tt), RMSE=RMSE)
+## combine with rr.vprop.HD
+tab.npred <- rbind(tab.npred, c(npred=m, rr.vprop.HD))
+## get rid of rownames
+rownames(tab.npred) <- NULL
+tab.npred
+
+######################################################################
+## Compare GEDE (vprop, HD, all features) with other methods
+######################################################################
+YF <- list(); tt <- list()
+for (L in c(5, 10, 20, 50, 100)) {
+  mn <- paste0("softImpute.L",L)
+  tt[[mn]] <- system.time(YF[[mn]] <- imputation(Ym, Grp=Grp, method="softImpute", lambdas=L, nMAD=NULL))[["elapsed"]]
+}
+## Note that SVT is very time consuming.
+for (mn in c("SVT", "mean", "median")) {
+  tt[[mn]] <- system.time(YF[[mn]] <- imputation(Ym, Grp=Grp, method=mn, nMAD=NULL))[["elapsed"]]
+}
+##
+RMSE <- sapply(YF, function(yf) sqrt(mean((yf[miss.idx]-Ytrue[miss.idx])^2)))
+tab.other.m <- cbind(CPU.Time=unlist(tt), RMSE=RMSE)
+## combine with rr.vprop.HD
+tab.other.m <- rbind(tab.other.m, GEDE=rr.vprop.HD)
+
+
+## with outliers. Set mMAD=2
+YF <- list(); tt <- list()
+for (L in c(5, 10, 20, 50, 100)) {
+  mn <- paste0("softImpute.L",L)
+  tt[[mn]] <- system.time(YF[[mn]] <- imputation(Ymo, Grp=Grp, method="softImpute", lambdas=L, nMAD=2))[["elapsed"]]
+}
+##
+for (mn in c("SVT", "mean", "median")) {
+  tt[[mn]] <- system.time(YF[[mn]] <- imputation(Ymo, Grp=Grp, method=mn, nMAD=2))[["elapsed"]]
+}
+## add GEDE
+tt[["GEDE"]] <- system.time(YF[["GEDE"]] <- GEDE(Ymo, X=Grp, K.method="vprop", HD=TRUE, nMAD=2)$Ystar)[["elapsed"]]
+
+
+##
+RMSE <- sapply(YF, function(yf) sqrt(mean((yf[miss.idx]-Ytrue[miss.idx])^2)))
+tab.other.o <- cbind(CPU.Time=unlist(tt), RMSE=RMSE)
+
+
+## combine tab.other with tab.other.o
+tab.other <- cbind(tab.other.m, tab.other.o)
+
+tab.other
+
+
+
+```
+
+
+```{r 4_compare_enhancement_10cv, message=FALSE}
+# start with enhancement
+######################################################################
+## Enhancement / 10-fold CV
+######################################################################
+set.seed(321)
+cvsplit <- createFolds(1:n, k=10)
+
+
+## run2 <- function(test.idx) {
+##   train.idx <- setdiff(1:n, test.idx)
+##   Ytrue.k <- Ytrue[test.idx,] #this is the "gold standard"
+##   ## Y does not have NAs nor outliers; so lasso is applicable
+##   Ytrain.k <- Y[train.idx,]; Ytest.k <- Y[test.idx, ]
+##   tt <- c(); Ystars <- list()
+##   tt["GEDE"] <- system.time( Ystars[["GEDE"]] <- Enhancer(Ytrain.k, Ytest.k, X.train=Grp[train.idx], X.test=Grp[test.idx], K.method="vprop", HD=TRUE, nMAD=NULL)$Ystar )[["elapsed"]]
+##   tt["LASSO.CV"] <- system.time(Ystars[["LASSO.CV"]] <- Enhancer(Ytrain.k, Ytest.k, X.train=Grp[train.idx], X.test=Grp[test.idx], method="lasso", mc.cores=ncores-1)$Ystar)[["elapsed"]]
+##   ## lasso2 uses GCV therefore faster than lasso (uses CV)
+##   tt["LASSO.GCV"] <- system.time(Ystars[["LASSO.GCV"]] <- Enhancer(Ytrain.k, Ytest.k, X.train=Grp[train.idx], X.test=Grp[test.idx], method="lasso2", mc.cores=ncores-1)$Ystar)[["elapsed"]]
+##   ## xgboost
+##   tt["Xgboost"] <- system.time(Ystars[["Xgboost"]] <- Enhancer(Ytrain.k, Ytest.k, X.train=Grp[train.idx], X.test=Grp[test.idx], method="xgboost")$Ystar)[["elapsed"]]
+##   ## random forest
+##   tt["LASSO.GCV"] <- system.time(Ystars[["LASSO.GCV"]] <- Enhancer(Ytrain.k, Ytest.k, X.train=Grp[train.idx], X.test=Grp[test.idx], method="lasso2", mc.cores=ncores-1)$Ystar)[["elapsed"]]
+##   ##
+##   rmse.k <- sapply(Ystars, rmse, truth=Ytrue.k)
+##   return(list(RMSE=rmse.k, Time=tt))
+## }
+
+
+run2 <- function(test.idx, Y, Ytrue, X) {
+  methods <- c("LASSO.CV"="lasso", "LASSO.GCV"="lasso2", "XGBoost"="XGBoost", "RandomForest"="RF")
+  n <- nrow(Y)
+  train.idx <- setdiff(1:n, test.idx)
+  ## Y cannot have NAs or outliers
+  Ytrain <- Y[train.idx,]; Ytest <- Y[test.idx, ]
+  tt <- c(); Ystars <- list()
+  for (mm in names(methods)) {
+    tt[[mm]] <- system.time(
+      Ystars[[mm]] <- Enhancer(Ytrain, Ytest, X.train=X[train.idx], X.test=X[test.idx], method=methods[[mm]], mc.cores=ncores-1)$Ystar
+    )[["elapsed"]]
+  }
+  ## GEDE needs some extra parameters
+  tt["GEDE"] <- system.time(
+    Ystars[["GEDE"]] <- Enhancer(Ytrain, Ytest, X.train=X[train.idx], X.test=X[test.idx], K.method="vprop", HD=TRUE, nMAD=NULL)$Ystar
+  )[["elapsed"]]
+  ## 
+  rmses <- sapply(Ystars, rmse, truth=Ytrue[test.idx,], relative=TRUE)
+  return(list(RMSE=rmses, Time=tt))
+}
+
+
+## warning: it takes about 4 hours to run the following loop
+t.run2 <- system.time(oo <- lapply(cvsplit, function(test.idx) {
+  run2(test.idx, Y=Y, Ytrue=Ytrue, X=Grp)
+}))
+t.run2
+
+
+rtab3 <- t(sapply(oo, function(o) o$RMSE))
+ttab3 <- t(sapply(oo, function(o) unlist(o$Time)))
+rtab3
+ttab3
+
+
+## colnames(rtab3) <- colnames(ttab3) <- names(o$Time)
+
+
+## combine them
+tab.enhancement <- as.matrix(cbind(ttab3, rtab3))
+tab.enhancement <- rbind(tab.enhancement, Average=colMeans(tab.enhancement))
+
+
+```
+
+
+
+```{r 5_hypo_test_DEG, message=FALSE}
+######################################################################
+## Hypothesis testing
+######################################################################
+nDEGs <- setdiff(1:m, DEGs)
+DEGs.bin <- rep(0,m); DEGs.bin[DEGs] <- 1
+## Now apply GEDE and LASSO (GCV) to the data, and conduct HT to
+## select DEGs. For now, the DEGs are defined as raw p-value < 0.05.
+htfun <- function(Est, Grp, DEGs.bin, fc.thresh=0) {
+  Y <- Est$Ystar
+  if (is.null(Est$Tk)) { #the original data
+    r.adj <- 1
+  } else {
+    r.adj <- t.adj.coef(Est)
+  }
+  rr <- limma(t(Y), Grp, r=r.adj)
+  ## rr <- limma(t(Y), Grp)
+  DEGs <- which(DEGs.bin==1)
+  m1 <- length(DEGs); m0 <- sum(DEGs.bin==0)
+  pvals <- rr[,"t.p.Grp"]; adjP <- rr[,"t.adjp.Grp"]
+  fc <- abs(rr[,"betahat.Grp"])
+  ## degs <- which(pvals<0.05)
+  degs <- which(pvals<0.05 & fc > fc.thresh)
+  return(c(TPR=100*length(intersect(degs, DEGs))/m1,
+           FPR=100*length(setdiff(degs, DEGs))/m0,
+           AUC=100*auc(DEGs.bin, 1-pvals)))
+}
+
+
+## internal comparison of K. It takes about 2G memory and about one
+## hour to finish. HTK stands for Hypothesis Testing with different
+## Ks.
+set.seed(12345)
+ns <- c(50, 60, 70)
+nreps <- 100; Ks <- 1:12
+## 
+t1 <- system.time(RR.HTK <- lapply(ns, function(nk) {
+  lapply(1:nreps, function(i) {
+    ## subset
+    idx <- sample(1:n, size=nk)
+    Yk <- Y[idx,]; Grp.k <- Grp[idx]
+    ## enhancement
+    ee <- lapply(Ks, function(k) Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K=k, HD=TRUE, nMAD=NULL)); names(ee) <- paste0("K", Ks)
+    ## HT
+    sapply(ee, function(Est) htfun(Est, Grp=Grp.k, DEGs.bin=DEGs.bin))
+  })
+}))
+names(RR.HTK) <- paste0("n", ns)
+lst.HTK.mean <- lapply(RR.HTK, function(lst) Reduce("+", lst)/nreps)
+print("this is sim1 data")
+lst.HTK.mean
+## save(lst.HTK.mean, RR.HTK, Ks, file="HTK.rda")
+
+
+## For sim2
+htfun2 <- function(Est, Grp, DEGs.bin) {
+  Y <- Est$Ystar
+  if (is.null(Est$Tk)) { #the original data
+    r.adj <- 1
+  } else {
+    r.adj <- t.adj.coef(Est)
+  }
+  rr <- limma(t(Y), Grp, r=r.adj)
+  ## rr <- limma(t(Y), Grp)
+  DEGs <- which(DEGs.bin==1)
+  m1 <- length(DEGs); m0 <- sum(DEGs.bin==0)
+  pvals <- rr[,"F.p"]; adjP <- rr[,"F.adjp"]
+  degs <- which(pvals<0.05)
+  return(c(TPR=100*length(intersect(degs, DEGs))/m1,
+           FPR=100*length(setdiff(degs, DEGs))/m0,
+           AUC=100*auc(DEGs.bin, 1-pvals)))
+}
+## 
+set.seed(12345)
+ns2 <- c(50, 60, 70)
+## 
+t1b <- system.time(RR2.HTK <- lapply(ns2, function(nk) {
+  lapply(1:nreps, function(i) {
+    ## randomization; but need to ensure that each group has at least
+    ## three subjects
+    n.min <- 0
+    while (n.min<3) {
+      idx <- sample(1:n, size=nk); Grp.k <- Grp2[idx,]
+      n.min <- min(colSums(Grp.k))
+    }
+    Yk <- sim2$Y[idx,]; 
+    ## enhancement
+    ee <- lapply(Ks, function(k) Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K=k, HD=TRUE, nMAD=NULL)); names(ee) <- paste0("K", Ks)
+    ## HT
+    sapply(ee, function(Est) htfun2(Est, Grp=Grp.k, DEGs.bin=DEGs.bin))
+  })
+}))
+names(RR2.HTK) <- paste0("n", ns2)
+lst2.HTK.mean <- lapply(RR2.HTK, function(lst) Reduce("+", lst)/nreps)
+## save(lst.HTK.mean, RR.HTK, Ks, file="HTK.rda")
+print("this is sim2 data")
+lst2.HTK.mean
+
+
+
+## compare GEDE with LASSO
+set.seed(12345)
+ns3 <- seq(40, 80, 5)
+## ns <- seq(20, 40, 2); nreps <- 100
+## Only a few minutes for GEDE. Much more time consuming with LASSO.
+t2 <- system.time(RR.HT <- lapply(ns3, function(nk) {
+  lapply(1:nreps, function(i) {
+    ## subset
+    idx <- sample(1:n, nk)
+    Yk <- Y[idx,]; Grp.k <- Grp[idx]
+    ## enhancement
+    ee <- list(Orig=list(Ystar=Yk),
+           GEDE.vprop=Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K.method="vprop", HD=TRUE, nMAD=NULL),
+           GEDE.K1=Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K=1, HD=TRUE, nMAD=NULL),
+           GEDE.K5=Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K=5, HD=TRUE, nMAD=NULL),
+           LASSO.GCV=Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, method="lasso2", mc.cores=ncores-1)
+           )
+    ## HT
+    sapply(ee, function(Est) htfun(Est, Grp=Grp.k, DEGs.bin=DEGs.bin))
+  })
+}))
+names(RR.HT) <- paste0("n", ns3)
+print("SL: this seems sim1. compare GEDE with LASSO")
+lst.HT.mean <- lapply(RR.HT, function(lst) Reduce("+", lst)/nreps)
+lst.HT.mean
+
+
+
+
+
+## A new simulation data, sim3, with true K=10 and p=6 regressors
+htfun3 <- function(Est, X, m1.each, fc.thresh=0) {
+  Y <- Est$Ystar; m <- ncol(Y); p <- ncol(X)
+  if (is.null(Est$Tk)) { #the original data
+    r.adj <- 1
+  } else {
+    r.adj <- t.adj.coef(Est)
+  }
+  rr <- limma(t(Y), X, r=r.adj)
+  ## two types of DEGs
+  m1 <- m1.each*p
+  DEGs.F.bin <- rep(0,m); DEGs.F.bin[1:m1] <- 1
+  DEGs.F <- which(DEGs.F.bin==1) #overall DEGs
+  DEGs.F.bin <- 1:m %in% DEGs.F
+  pvals.F <- rr[, "F.p"]; degs.F <- which(pvals.F<0.05)
+  ss.F <- c("TPR.F"=100*length(intersect(degs.F, DEGs.F))/m1,
+            "FPR.F"=100*length(setdiff(degs.F, DEGs.F))/(m-m1),
+            "AUC.F"=100*auc(DEGs.F.bin, 1-pvals.F))
+  ##
+  ss.t <- matrix(0, nrow=p, ncol=3)
+  colnames(ss.t) <- c("TPR.t", "FPR.t", "AUC.t")
+  for (j in 1:p) {
+    DEGs.j.bin <- rep(0, m); DEGs.j.bin[(m1.each*(j-1)+1):(m1.each*j)] <- 1
+    DEGs.j <- which(DEGs.j.bin==1)
+    pvals.j <- rr[, paste0("t.p.x",j)]; degs.j <- which(pvals.j<0.05)
+    ss.t[j, "TPR.t"] <- 100*length(intersect(degs.j, DEGs.j))/m1.each
+    ss.t[j, "FPR.t"] <- 100*length(setdiff(degs.j, DEGs.j))/(m-m1.each)
+    ss.t[j, "AUC.t"] <- 100*auc(DEGs.j.bin, 1-pvals.j)
+  }
+  ## 
+  return(c(ss.F, colMeans(ss.t)))
+}
+
+
+## just use a fixed sample size for illustration
+nk <- 50; Ks3 <- c(1:9, seq(10, 40), 41:48)
+t3 <- system.time(RR3.HTK <- lapply(1:nreps, function(i) {
+  idx <- sample(1:n, nk)
+  Yk <- sim3$Y[idx, ]; Xk <- X3s[idx, ]
+  ## ## check estimated K
+  ## re.k <- RobEst(Yk, Xk, K.method="vprop")
+  ee <- list(Orig=list(Ystar=Yk))
+  for (k in Ks3) ee[[paste0("GEDE.K", k)]] <- Enhancer(Yk, Yk, X.train=Xk, X.test=Xk, K=k, HD=TRUE, nMAD=NULL)
+  return(sapply(ee, function(Est) htfun3(Est, Xk, m1.each)))
+}))
+## 
+RR3.HTK.mean <- Reduce("+", RR3.HTK)/nreps
+t(RR3.HTK.mean)
+
+
+## save the results in "sim_results.rda"
+save(oracle, oracle2, Grp, Grp2, SigmaY, SigmaEsts.cov, SigmaEsts.RobEst, tab.est, tab.K, tab.npred, tab.other, rtab3, ttab3, tab.enhancement, ns, ns2, ns3, Ks, Ks3, nreps, lst2.HTK.mean, lst.HTK.mean, lst.HT.mean, RR.HTK, RR3.HTK.mean, t1, t1b, t2, t.run2, t3, file="sim_results.rda")
+
+
+
+
+## ########## temp area ##########
+## ee1 <- Enhancer(Y, Y, X.train=Grp, X.test=Grp, K=1, HD=TRUE, nMAD=NULL)
+## r1 <- t.adj.coef(ee1)
+## rr1 <- limma(t(ee1$Ystar), Grp, r.adj=r1)
+
+
+## ## 
+## Y2 <- sim2$Y
+## ee2 <- Enhancer(Y2, Y2, X.train=Grp2, X.test=Grp2, K=1, HD=TRUE, nMAD=NULL)
+## r2 <- t.adj.coef(ee2)
+## rr2 <- limma(t(ee2$Ystar), Grp2, r.adj=r2)
+
+```
+
+
+```{r closing, message=FALSE}
+print("pipe done")
+```

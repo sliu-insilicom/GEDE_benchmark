@@ -1,11 +1,11 @@
 ---
 title: "GEDE_explore_DEA"
 author: "Shaopeng"
-date: "2024-11-24"
+date: "2024-12-30"
 output: html_document
 ---
 
-```{r setup, include=FALSE}
+```{r setup, include=FALSE, echo=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library("recount3")
 library("limma")
@@ -14,6 +14,11 @@ source("GEDE_data_prep.R")
 source("GEDE_simulation.R")
 library(pheatmap)
 library(DESeq2)
+library(Matrix)
+library(GEDE)
+library(xgboost)
+library(randomForest)
+library(Hmisc)
 ```
 
 
@@ -103,6 +108,8 @@ save(Data_BRCA, file="step2.1_BRCA_race_for_DEG.Rdata")
 
 ### Imputation on those data
 ```{r 2.get_cov_matrix_and_simulation_parameters, message=FALSE}
+# script: TCGA_lunc_Cov.r, https://www.dropbox.com/preview/new_GEDE/simulations/TCGA_lung_Cov.r?role=personal 
+
 load("step2.1_BRCA_race_for_DEG.Rdata")  # this is the raw count matrix (transformed from recount3 matrix)
 
 # first transfer the data to the format as Xing previous use: count is voom transformed and group is a vector of variables 
@@ -196,11 +203,86 @@ oracle <- list(betahat=rbind(beta0=beta0, Grp=beta1),
                Tk=Tk, K=kstar, Lk=lambdas[1:kstar], sigma2=sigma2)
 save(DEGs, oracle, file="sim_params.rda")
 
+## SL notes for variables in "oracle"
+# betahat: A 2-row matrix for beta0 (baseline) and beta1 (group coeff)
+# Tk: The matrix of eigenvectors corresponding to the top kstar eigenvalues of the covariance matrix of CovY. This is
+#     Represents the principal components (PCs) that explain the majority of the variance in the data.
+# K=kstar: top number of PCs to use
+# Lk: A vector containing the top kstar eigenvalues of the covariance matrix after adjusting for noise.
+# sigma2: The estimated noise variance from the covariance structure.
 ```
 
 
 
 ```{r 3.simulate_data, message=FALSE}
+# script, sim-datagen.r, https://www.dropbox.com/preview/new_GEDE/simulations/sim-datagen.r?role=personal 
+objs <- load("sim_params.rda")
+
+######################################################################
+## Generate two sets of simulated data
+######################################################################
+n.A <- n.B <- 200; n <- n.A+n.B
+Grp <- c(rep(0,n.A), rep(1, n.B))  # this is arbitrary group infor for simulation
+X <- cbind(Intercept=rep(1, n), Grp)
+
+set.seed(11111)
+## sim1 is a dataset with two groups
+# n is sample size, oracle stores beta0 and beta1, etc.
+sim1 <- PPCA.datagen(n, oracle, Grp, miss.prop=0.1, out.prop=0.1)
+
+
+## sim2 is a dataset with five groups: add additional beta2 (to replace beta1) for groups to set DEG different between groups
+# it uses 1 1 0 0 permutation so 2 groups will be different from baseline, the other 2 not
+m <- ncol(sim1$Ytrue); N <- n*m
+nG <- 5
+Grp2.categorical <- sample(paste0("G", 1:nG), size=n, replace=TRUE)
+Grp2 <- model.matrix(~Grp2.categorical)[, -1]
+colnames(Grp2) <- paste0("G", 2:nG)
+## created the effect sizes
+beta2 <- matrix(0, nrow=nG-1, ncol=m); rownames(beta2) <- paste0("G", 2:nG)
+## for each DEG, 2 groups (other than G1) have different mean values (use 1 1 0 0 permutation)
+## than G1
+gg <- c(c(1,1), rep(0, nG-3))
+beta2[, DEGs] <- 2.0*sapply(DEGs, function(i) sample(gg))
+## beta2[, DEGs] <- 2.0*(rbinom(n=length(DEGs)*(nG-1), size=1, prob=.5))
+oracle2 <- oracle; oracle2$betahat <- rbind(beta0=oracle$betahat["beta0",], beta2)
+sim2 <- PPCA.datagen(n, oracle2, Grp2, miss.prop=0.1, out.prop=0.1)
+
+
+
+######################################################################
+## 04/28/2024. A new simulation data for multiple regression analysis,
+## with true K=10 and 6 regressors
+######################################################################
+# SL note: simulates gene expression data influenced by 6 predictors with predefined associations (50 genes per predictor).
+# Noise, missing values, and outliers are added for realism.
+# It allows testing multiple regression models, particularly under known predictor-gene relationships.
+
+set.seed(22222)
+p <- 6
+X3 <- matrix(rnorm(n*p), n)
+## standardize the regressors
+X3s <- as.matrix(scale(X3)); colnames(X3s) <- paste0("x", 1:p)
+## each x_j is associated with 50 genes
+m1.each <- 50; m1 <- m1.each*p
+b3 <- lapply(1:p, function(j) t(runif(m1.each, min=.5, max=1)))
+beta3 <- as.matrix(cbind(bdiag(b3), matrix(0, p, m-m1)))
+##
+## re-estimate sigma2 from oracle with new K=10
+Ktrue3 <- 10; Lk.sim3 <- oracle$Lk[1:Ktrue3]
+sigma2.sim3 <- (sum(oracle$Lk)+m*oracle$sigma2-sum(Lk.sim3))/m
+oracle3 <- list(betahat=rbind(beta0=oracle$betahat["beta0",], beta3),
+                Tk=oracle$Tk[, 1:Ktrue3], K=Ktrue3,
+                Lk=Lk.sim3, sigma2=sigma2.sim3)
+sim3 <- PPCA.datagen(n, oracle3, X3, miss.prop=0.1, out.prop=0.1)
+
+
+## save the simulated data
+save(sim1, sim2, sim3, X, X3s, Grp, Grp2, DEGs, oracle, oracle2, oracle3, beta3, m, m1.each, m1, p, n, N, file="simdata.rda")
+
 
 
 ```
+
+
+
