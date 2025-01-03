@@ -13,8 +13,8 @@ library(Hmisc)
 library(limma)
 #ncores <- detectCores()
 ncores <- 32  # let's manually pick one
-load("sim_params.rda") #DEGs, oracle
-objs <- load("simdata.rda") 
+load("/home/sliu/github/GEDE_benchmark/src/sim_params.rda") #DEGs, oracle
+objs <- load("/home/sliu/github/GEDE_benchmark/src/simdata.rda") 
 ```
 
 

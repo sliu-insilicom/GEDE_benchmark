@@ -1,0 +1,71 @@
+---
+title: "step4_plot_simulation_results"
+output: html_document
+date: "2025-01-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(Hmisc)
+load("sim_results.rda")
+
+
+```
+
+
+
+```{r 1_result_of_param_est, include=FALSE}
+w <- latex(tab.est, label="tab:sim1-est", ctable=FALSE, cdec=c(3, 3, 3, 3),
+           file="results/sim1-est.tex", rowlabel="Dataset",
+           cgroup=c("\\texttt{cov()}", "\\texttt{RobEst()}"),
+           n.cgroup=c(2,2),
+           caption="Accuracy of covariance estimation. Sample covariance are computed by using \\texttt{cov()} function with option \\texttt{use=pairwise.complete.obs}. RMSE: root mean squared error between the estimated covariance and the oracle values. Cor: Pearson correlation between the estimated covariance and the oracle values. Datasets being used are $Y$ (the original simulated data), $Y^{m}$ (simulated data with 10\\% missing values), and $Y^{mo}$ (simulated data with 10\\% missing values and 10\\% artificial outliers). For rows Y, Ym, and Ymo, the estimates are pooled covariance matrix estimated from the two groups; for Y.1gp, the covariance estimators are directly applied to $Y$ without using the grouping information.")
+
+
+
+
+## To compare the true and estimated covariance for the first 10 genes
+idx <- 1:10 # use the first 10 genes
+pdf("results/sim-cov.pdf", height=10, width=10)
+par(mfrow=c(2,2))
+mplot(SigmaY[idx,idx], main="(a)")
+mplot(SigmaEsts.RobEst$Y[idx,idx], main="(b)");
+mplot(SigmaEsts.RobEst$Ym[idx,idx], main="(c)")
+mplot(SigmaEsts.RobEst$Ymo[idx,idx], main="(d)")
+dev.off()
+
+```
+
+
+
+```{r 2_GEDE_different_k, include=FALSE}
+######################################################################
+## Internal comparison of GEDE with different choices of K
+######################################################################
+w <- latex(tab.K, label="tab:sim1-GEDE-K", ctable=TRUE, cdec=c(0, 3, 3, 3, 3),
+           file="results/sim1-GEDE-K.tex", rowlabel="Method",
+           cgroup=c("", "Standard", "HD"), n.cgroup=c(1,2,2),
+           caption="Computational cost and accuracy of GEDE as an imputation method, with various choices of number of PCs ($K$). Two algorithms of GEDE are used: the standard method and the HD method. For methods GEDE.REk and GEDE.vprop, number of PCs (K) is automatically selected by the REk criterion and the proportion of variance explained at 80\\% level (vprop=0.8), respectively.")
+
+
+######################################################################
+## Internal comparison of GEDE with different number of predictors
+######################################################################
+w <- latex(tab.npred, label="tab:sim1-GEDE-npred", ctable=TRUE, cdec=c(0, 3, 3),
+           file="results/sim1-GEDE-npred.tex", rowlabel="",
+           caption="Computational cost and accuracy of GEDE as an imputation method, with various number of genes ($npred$, out of a total of $m=1,000$ genes) used in the imputation. Number of PCs (K) is automatically selected with option vprop=0.8.")
+
+
+
+```
+
+
+
+```{r 3_compare_with_other_methods, include=FALSE}
+
+
+
+```
+
+
+
