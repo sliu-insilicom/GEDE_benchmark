@@ -1,0 +1,15 @@
+nohup: ignoring input
+[1] "Sun Feb 16 21:04:23 2025"
+
+
+processing file: step3_run_simulation.Rmd
+1/12                             
+2/12 [setup]                     
+3/12                             
+4/12 [1_2.param_est_by_sim1]     
+5/12                             
+6/12 [3.use_subset_of_feature]   
+7/12                             
+8/12 [4_compare_enhancement_10cv]
+9/12                             
+10/12 [5_hypo_test_DEG]           

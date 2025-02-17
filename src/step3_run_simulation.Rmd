@@ -276,7 +276,7 @@ nDEGs <- setdiff(1:m, DEGs)
 DEGs.bin <- rep(0,m); DEGs.bin[DEGs] <- 1
 ## Now apply GEDE and LASSO (GCV) to the data, and conduct HT to
 ## select DEGs. For now, the DEGs are defined as raw p-value < 0.05.
-htfun <- function(Est, Grp, DEGs.bin, fc.thresh=0) {
+htfun <- function(Est, Grp, DEGs.bin, fc.thresh=0) {    
   Y <- Est$Ystar
   if (is.null(Est$Tk)) { #the original data
     r.adj <- 1
@@ -287,22 +287,24 @@ htfun <- function(Est, Grp, DEGs.bin, fc.thresh=0) {
   ## rr <- limma(t(Y), Grp)
   DEGs <- which(DEGs.bin==1)
   m1 <- length(DEGs); m0 <- sum(DEGs.bin==0)
-  pvals <- rr[,"t.p.Grp"]; adjP <- rr[,"t.adjp.Grp"]
-  fc <- abs(rr[,"betahat.Grp"])
-  ## degs <- which(pvals<0.05)
-  degs <- which(pvals<0.05 & fc > fc.thresh)
+  #pvals <- rr[,"t.p.Grp"]; adjP <- rr[,"t.adjp.Grp"]   
+  # this used in sim2
+  pvals <- rr[,"F.p"]; adjP <- rr[,"F.adjp"]
+  #fc <- abs(rr[,"betahat.Grp"])
+  degs <- which(pvals<0.05)
+  ## degs <- which(pvals<0.05 & fc > fc.thresh)  
   return(c(TPR=100*length(intersect(degs, DEGs))/m1,
            FPR=100*length(setdiff(degs, DEGs))/m0,
            AUC=100*auc(DEGs.bin, 1-pvals)))
 }
 
 
-## internal comparison of K. It takes about 2G memory and about one
-## hour to finish. HTK stands for Hypothesis Testing with different
+## internal comparison of K. It takes about 2G memory and ~20min
+## to finish. HTK stands for Hypothesis Testing with different
 ## Ks.
 set.seed(12345)
 ns <- c(50, 60, 70)
-nreps <- 100; Ks <- 1:12
+nreps <- 300; Ks <- 1:12  # change to 300
 ## 
 t1 <- system.time(RR.HTK <- lapply(ns, function(nk) {
   lapply(1:nreps, function(i) {

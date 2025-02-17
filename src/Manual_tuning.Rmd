@@ -1,0 +1,140 @@
+---
+title: "Manual_tunning"
+output: html_document
+date: "2025-02-16"
+---
+
+### Use this script to run interactiva data testing for debug pupose
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+### Sim1 low performance: please open step3 Rmd and load pkgs + data
+```{r 1_check_sim1, echo=FALSE}
+# compare sim1 and sim2 data deviance
+dev.new()
+dev_sim1 = as.vector((sim1$Y - sim1$Ytrue)/sim1$Y)
+dev_sim2 = as.vector((sim2$Y - sim2$Ytrue)/sim2$Y)
+# Create a boxplot with both deviance distributions
+boxplot(dev_sim1, dev_sim2,
+        names = c("Sim 1", "Sim 2"),
+        main = "Comparison of Deviance Ratio",
+        ylab = "Deviance ratio",
+        col = c("lightblue", "lightcoral"),
+        ylim = c(-1, 1),
+        border = "black",
+        notch = TRUE)
+
+# Add a horizontal reference line at 0%
+abline(h = 0, col = "red", lty = 2)
+
+# count abnormal ratio
+sum(abs(dev_sim1) > 0.5) / length(dev_sim1)
+sum(abs(dev_sim2) > 0.5) / length(dev_sim2)
+
+# check oracle parameter
+betahat_oracle = oracle$betahat[2, ]
+sum(betahat_oracle != 0)
+
+length(intersect(which((betahat_oracle != 0)), DEGs))  # this is 169, agrees DEG information
+
+
+# directly call DEG on Y to see if agree
+Est = sim1
+Y <- Est$Y
+if (is.null(Est$Tk)) { #the original data
+  r.adj <- 1
+} else {
+  r.adj <- t.adj.coef(Est)
+}
+rr <- limma(t(Y), Grp, r=r.adj)
+pvals <- rr[,"F.p"]; adjP <- rr[,"F.adjp"]
+degs <- which(pvals<0.05)
+100*length(intersect(degs, DEGs))/length(DEGs)
+
+# apply fix to generate Ystar
+set.seed(12345)
+nk <- 50; Ks = 10; nreps <- 100
+idx <- sample(1:n, size=nk)
+Yk <- Y[idx,]; Grp.k <- Grp[idx]  # Y is attached from sim1
+ee <- Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K=Ks, HD=TRUE, nMAD=NULL)
+htfun(Est=ee, Grp=Grp.k, DEGs.bin=DEGs.bin)  # 53
+
+# call DEG on Yk directly as baseline
+rr <- limma(t(Yk), Grp.k, r=1)
+pvals <- rr[,"F.p"]; adjP <- rr[,"F.adjp"]
+degs <- which(pvals<0.05)
+100*length(intersect(degs, DEGs))/length(DEGs)  #54.4
+
+# how about those undetected
+extra = setdiff(DEGs, degs)
+
+
+
+# try to include more samples
+nk <- 300; Ks = 10; nreps <- 100
+idx <- sample(1:n, size=nk)
+Yk <- Y[idx,]; Grp.k <- Grp[idx]  # Y is attached from sim1
+ee <- Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K=Ks, HD=TRUE, nMAD=NULL)
+htfun(Est=ee, Grp=Grp.k, DEGs.bin=DEGs.bin) 
+
+# try full sample
+Ks = 10; nreps <- 100
+Yk <- Y; Grp.k <- Grp # Y is attached from sim1
+ee <- Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K=Ks, HD=TRUE, nMAD=NULL)
+htfun(Est=ee, Grp=Grp.k, DEGs.bin=DEGs.bin)  # 94
+
+
+```
+
+
+```{r 2_adj_param, echo=FALSE}
+htfun <- function(Est, Grp, DEGs.bin, fc.thresh=0) {    
+  Y <- Est$Ystar
+  if (is.null(Est$Tk)) { #the original data
+    r.adj <- 1
+  } else {
+    r.adj <- t.adj.coef(Est)
+  }
+  rr <- limma(t(Y), Grp, r=r.adj)
+  ## rr <- limma(t(Y), Grp)
+  DEGs <- which(DEGs.bin==1)
+  m1 <- length(DEGs); m0 <- sum(DEGs.bin==0)
+  #pvals <- rr[,"t.p.Grp"]; adjP <- rr[,"t.adjp.Grp"]   
+  # this used in sim2
+  pvals <- rr[,"F.p"]; adjP <- rr[,"F.adjp"]
+  #fc <- abs(rr[,"betahat.Grp"])
+  degs <- which(pvals<0.05)
+  print(length(degs))
+  ## degs <- which(pvals<0.05 & fc > fc.thresh)  
+  return(c(TPR=100*length(intersect(degs, DEGs))/m1,
+           FPR=100*length(setdiff(degs, DEGs))/m0,
+           AUC=100*auc(DEGs.bin, 1-pvals)))
+}
+
+
+set.seed(3320)
+ns <- c(50, 60, 70)
+nreps <- 10; Ks <- 6:8   # use 10 instead of 100 for faster run
+## 
+t1 <- system.time(RR.HTK <- lapply(ns, function(nk) {
+  lapply(1:nreps, function(i) {
+    ## subset
+    idx <- sample(1:n, size=nk)
+    Yk <- Y[idx,]; Grp.k <- Grp[idx]
+    ## enhancement
+    ee <- lapply(Ks, function(k) Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K=k, HD=TRUE, nMAD=NULL)); names(ee) <- paste0("K", Ks)
+    ## HT
+    sapply(ee, function(Est) htfun(Est, Grp=Grp.k, DEGs.bin=DEGs.bin))
+  })
+}))
+names(RR.HTK) <- paste0("n", ns)
+lst.HTK.mean <- lapply(RR.HTK, function(lst) Reduce("+", lst)/nreps)
+lst.HTK.mean
+```
+
+
+

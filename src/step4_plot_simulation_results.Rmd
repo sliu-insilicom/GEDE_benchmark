@@ -62,10 +62,119 @@ w <- latex(tab.npred, label="tab:sim1-GEDE-npred", ctable=TRUE, cdec=c(0, 3, 3),
 
 
 ```{r 3_compare_with_other_methods, include=FALSE}
+######################################################################
+## Comparing GEDE with other imputation methods
+######################################################################
+w <- latex(tab.other, label="tab:sim1-GEDE-other", ctable=TRUE, cdec=c(3, 3, 3, 3),
+           file="results/sim1-GEDE-other.tex", rowlabel="Method",
+           cgroup=c("Ym", "Ymo"), n.cgroup=c(2,2),
+           caption="Comparing GEDE with other imputation methods. Several different choices of penalty (L=5, 10, 20, 50, and 100) are applied in softImpute. GEDE is applied with vprop=0.8 and HD method. Ym is a dataset with 10\\% missing values. Ymo is a dataset with 10\\% missing values and 10\\% outliers. To remove outliers, all methods that applied to Ymo includes a Hampel filter with nMAD=2.")
 
+
+######################################################################
+## Comparing GEDE with LASSO in enhancing the data
+######################################################################
+tab.enhancement.time <- tab.enhancement[, 1:5]
+tab.enhancement.rmse <- tab.enhancement[, 6:10]
+
+
+
+
+w <- latex(tab.enhancement.rmse, label="tab:sim1-enhancement-rmse",
+           ctable=TRUE, cdec=rep(3, 5),
+           file="results/sim1-enhancement-rmse.tex", rowlabel="",
+           caption="Performance of GEDE and several competing data enhancement methods. Dataset used in this analysis is Y, with no missing values nor outliers, so that competing methods (LASSO, XGBoost, and RandomForest) are applicable. Two methods are used to select the optimal L1 penalty in LASSO, one based on 5-fold CV, and the other one based on GCV. GEDE is applied with vprop=0.8 and HD method. Ym is a dataset with 10\\% missing values.")
+
+
+w <- latex(tab.enhancement.time, label="tab:sim1-enhancement-time",
+           ctable=TRUE, cdec=c(1,1,1,1,3),
+           file="results/sim1-enhancement-time.tex", rowlabel="",
+           caption="Computational cost (in seconds) of GEDE and several competing data enhancement methods. Dataset used in this analysis is Y, with no missing values nor outliers, so that competing methods (LASSO, XGBoost, and RandomForest) are applicable. Two methods are used to select the optimal L1 penalty in LASSO, one based on 5-fold CV, and the other one based on GCV. For competing enhancement methods, parallel computing is used to reduce computational cost. GEDE is applied with vprop=0.8 and HD method. Ym is a dataset with 10\\% missing values.")
 
 
 ```
 
 
 
+```{r 4_result_of_hypo_testing, include=FALSE}
+######################################################################
+## Results about hypothesis testing
+######################################################################
+
+## Impact of K
+pdf("results/sim-HT-Ks.pdf", width=10.5, height=7)
+nss <- list(ns, ns2); nn <- list(paste0("n", ns), paste0("n", ns2))
+Ks <- 1:ncol(lst.HTK.mean[[1]])
+par(mfcol=c(2,3))
+for (si in c("FPR", "TPR", "AUC")) {
+  ss <- list(sapply(lst.HTK.mean, function(o) o[si,])[,nn[[1]]],
+             sapply(lst2.HTK.mean, function(o) o[si,])[,nn[[2]]])
+  ylim <- range(ss)
+  if (si=="FPR") ylim[1] <- 0
+  for (di in c(1,2)) {
+    matplot(Ks, ss[[di]], type="l", lty=1, xlab="K", ylab="",
+            ylim=ylim, main=paste0(si, " (sim", di, ")"))
+    legend("bottomleft", lty=1, col=1:length(nn[[di]]),
+           legend=paste0("n=", nss[[di]]))
+    if (si=="FPR") abline(h=5, lty=3)
+  }
+}
+dev.off()
+
+
+
+
+## Compare with LASSO
+## ns <- sapply(names(lst.HT.mean), function(s) as.integer(substr(s, 2, nchar(s))))
+ndata <- colnames(lst.HT.mean[[1]])
+
+
+pdf("results/sim1-HT.pdf", width=10.5, height=3.5)
+par(mfrow=c(1,3))
+pchs <- 1:length(ndata); cols <- 1:length(ndata)
+for (si in c("FPR", "TPR", "AUC")) {
+  yi <- t(sapply(lst.HT.mean, function(x) x[si,]))
+  ylim <- range(yi)
+  if (si=="FPR") ylim[1] <- 0
+  matplot(x=ns3, y=yi, type="b", lty=1, ylim=ylim,
+          pch=pchs, col=cols, xlab="n", ylab="", main=si)
+  legend("bottomright", legend=ndata, lty=1, pch=pchs, col=cols)
+  if (si=="FPR") abline(h=5, lty=3)
+}
+dev.off()
+
+
+## summary table for selected ns
+NS <- c("n50", "n65", "n80")
+tab.HT.mean <- t(Reduce("rbind", lst.HT.mean[NS]))[c("Orig", "GEDE.K1", "LASSO.GCV"),]
+w <- latex(tab.HT.mean, label="tab:sim1-HT", ctable=TRUE,
+           cdec=rep(2,9),
+           file="results/sim1-HT.tex", rowlabel="",
+           cgroup=c(NS), n.cgroup=rep(3,length(NS)),
+           caption=paste0("Performance of DGEA based on the Original, GEDE enhanced, and LASSO enhanced data. Reported results are sample means of the percentages of TPR, FPR, and AUC taken over ", nreps, " randomly generated resampling data with the corresponding sample size. "))
+
+
+######################################################################
+## A plot to show that for more complex cases, using a larger K leads
+## to better performance in H-T
+######################################################################
+## make a plot of mean AUCs
+pdf("results/sim3-HT.pdf", width=9, height=6)
+par(mfrow=c(2,3))
+for (test in c("F", "t")) {
+  for (s in c("TPR", "FPR", "AUC")) {
+    nn <- paste0(s, ".", test); nn2 <- paste0(s, " (", test, "-test)")
+    ss <- RR3.HTK.mean[nn,]
+    if (s == "FPR") {
+      yl <- c(0, max(ss))
+    } else {
+      yl <- range(ss)
+    }
+    plot(Ks3, ss[-1], type="l", ylim=yl, xlab="K", ylab=s, main=nn2)
+    abline(h=ss[1], lty=2)
+  }
+}
+dev.off()
+
+
+```
