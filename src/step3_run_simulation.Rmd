@@ -303,8 +303,12 @@ htfun <- function(Est, Grp, DEGs.bin, fc.thresh=0) {
 ## to finish. HTK stands for Hypothesis Testing with different
 ## Ks.
 set.seed(12345)
-ns <- c(50, 60, 70)
-nreps <- 300; Ks <- 1:12  # change to 300
+Ks <- 1:12  
+nreps <- 100
+
+#ns <- c(50, 60, 70)
+ns <- c(150, 175, 200)
+
 ## 
 t1 <- system.time(RR.HTK <- lapply(ns, function(nk) {
   lapply(1:nreps, function(i) {

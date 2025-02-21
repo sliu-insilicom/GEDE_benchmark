@@ -1,5 +1,5 @@
 nohup: ignoring input
-[1] "Sun Feb 16 21:04:23 2025"
+[1] "Tue Feb 18 12:16:29 2025"
 
 
 processing file: step3_run_simulation.Rmd
@@ -13,3 +13,11 @@ processing file: step3_run_simulation.Rmd
 8/12 [4_compare_enhancement_10cv]
 9/12                             
 10/12 [5_hypo_test_DEG]           
+11/12                             
+12/12 [closing]                   
+output file: step3_run_simulation.knit.md
+
+/usr/bin/pandoc +RTS -K512m -RTS step3_run_simulation.knit.md --to html4 --from markdown+autolink_bare_uris+tex_math_single_backslash --output step3_run_simulation.html --lua-filter /home/sliu/R/x86_64-pc-linux-gnu-library/4.4/rmarkdown/rmarkdown/lua/pagebreak.lua --lua-filter /home/sliu/R/x86_64-pc-linux-gnu-library/4.4/rmarkdown/rmarkdown/lua/latex-div.lua --self-contained --variable bs3=TRUE --section-divs --template /home/sliu/R/x86_64-pc-linux-gnu-library/4.4/rmarkdown/rmd/h/default.html --no-highlight --variable highlightjs=1 --variable theme=bootstrap --mathjax --variable 'mathjax-url=https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-AMS-MML_HTMLorMML' --include-in-header /tmp/RtmpOJQY9N/rmarkdown-str2face762c8fe88.html 
+
+Output created: step3_run_simulation.html
+[1] "Tue Feb 18 15:02:27 2025"

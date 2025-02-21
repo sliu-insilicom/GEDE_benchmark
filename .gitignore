@@ -4,4 +4,6 @@
 *.RData
 *.rData
 *.rda
+*.tsv
+
 

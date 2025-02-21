@@ -1,0 +1,266 @@
+---
+title: "Protein_profile DEG"
+output: html_document
+date: "2025-02-17"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(cBioPortalData)
+library(AnVIL)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library("recount3")
+library("limma")
+library("SummarizedExperiment")  # assays function come from here
+source("GEDE_data_prep.R")
+source("GEDE_simulation.R")
+library(pheatmap)
+library(DESeq2)
+library(Matrix)
+library(GEDE)
+library(xgboost)
+library(randomForest)
+library(Hmisc)
+
+cbio <- cBioPortal()
+
+# cols are sampleID, match conditions from metadata for DEG
+# pick a condition for binary group
+# this is for the cBP protein profile data only, so don't include in the data prep script
+prep_for_limma <- function(metadata, expr_matrix, group_column, group_values) {
+  # Ensure metadata contains the specified column
+  if (!group_column %in% colnames(metadata)) {
+    stop("Error: Specified group_column not found in metadata.")
+  }
+  
+  # Filter metadata to include only the two selected groups, and create group infor
+  filtered_metadata <- metadata[metadata[[group_column]] %in% group_values, ][c("sampleId", group_column)]
+  reference_site <- group_values[1]
+  filtered_metadata$group <- factor(ifelse(filtered_metadata[[group_column]] == reference_site, 0, 1))
+  
+  
+  # remove cols from exp data that are not in filtered_metadata
+  common_samples <- intersect(filtered_metadata$sampleId, colnames(expr_matrix))
+  expr_matrix <- expr_matrix[, common_samples]
+  
+
+  # reorder metadata table s.t. it has same order as expr_matrix columns
+  filtered_metadata <- filtered_metadata[match(colnames(expr_matrix), filtered_metadata$sampleId), ]
+  # Ensure metadata and expression matrix are fully aligned
+  if (!all(colnames(expr_matrix) == filtered_metadata$sampleId)) {
+    stop("Error: Expression matrix and metadata sample IDs do not match after filtering.")
+  }
+  
+  # Return cleaned data as a list
+  return(list(expression = expr_matrix, group = filtered_metadata$group))
+}
+```
+
+### This part is intentially ignored
+```{r manual_try_cbp_data, eval = FALSE, echo = FALSE}
+########## run only once to get information
+# find cBP data with protein profile available
+studies <- getStudies(cbio, buildReport = TRUE)
+selected_studies <- c()
+
+# check who has protein profiles
+# download metadata
+for (temp_proj in studies$studyId) { #485 in total
+  tryCatch({
+    # Fetch molecular profiles data
+    temp_profile <- molecularProfiles(cbio, temp_proj)
+    if ("Protein expression (RPPA)" %in% temp_profile$name) {
+      selected_studies = c(selected_studies, temp_proj)
+      print(temp_proj)
+      rm(temp_profile)
+    }
+  }, error = function(e) {
+    cat("Failed to fetch molecular profiles for study:", temp_proj, "\n")
+  })
+}
+
+# also need to specify all genes
+########## Get all gene information
+total_genes <- list()
+current_page <- 0
+records_per_page <- 1000  # This is based on your observation that it returns 1000 records by default
+
+repeat {
+    # Fetching data page by page
+    print(current_page)
+    page_data <- geneTable(cbio, page = current_page, pageSize = records_per_page)
+    current_record <- paste0("page_", current_page)
+    total_genes[[current_record]] <- page_data
+    if (length(page_data$entrezGeneId) < records_per_page) {
+        break  # Exit loop if the last page contains fewer records than the maximum
+    }
+    current_page <- current_page + 1
+}
+
+# save to Rdata for future usage
+save(selected_studies, file="step5_out.rda")
+
+
+merged_genes <- bind_rows(total_genes)
+write_tsv(merged_genes, "step5_out_cBP_all_gene_information.tsv")
+rm(page_data, current_page, current_record, records_per_page, total_genes)
+# only coding genes
+# coding_genes <- merged_genes[merged_genes$type == "protein-coding", ]
+# dim(coding_genes)
+# rm(merged_genes)
+
+
+
+
+############ try to pull 1 data to check
+# parameters are NOT properly passed to nested cBP api call, so can't use function here
+
+# get_data_for_a_protein_project <- function(proj_id) {
+#   test_proj = proj_id 
+#   print(paste0("Processing ", test_proj))
+#   # get metadata
+#   temp_metadata <- clinicalData(cbio, test_proj)
+#   temp_profile <- molecularProfiles(cbio, test_proj)
+#   # profile ID is project-specific so needs to be read from data
+#   prof_ID = temp_profile[temp_profile$name == "Protein expression (RPPA)", ]$molecularProfileId[1] 
+#   
+#   # read protein profiles table (similar to RNA-seq) 
+#   temp_rppa <- cBioPortalData(api=cbio, by = "entrezGeneId", studyId = test_proj, 
+#     #genePanelId = "IMPACT341",  
+#     genes = all_genes,  # use all for now, may use coding only 
+#     molecularProfileIds = prof_ID
+#   )
+#   
+#   # transfer to df
+#   rppa_data <- experiments(temp_rppa)[[prof_ID]]
+#   rppa_df <- as.data.frame(assay(rppa_data))
+#   print(dim(rppa_df))
+#   
+#   # return
+#   return(list(metadata = temp_metadata, profile=temp_profile, rppa = rppa_df))
+# }
+
+
+# append results to a list
+project_status = list()
+
+
+
+
+# Checked 23/73 projects, next use 24
+i = 23
+test_proj = selected_studies[i]
+# metadata
+temp_metadata <- clinicalData(cbio, test_proj)
+# expression data
+temp_profile <- molecularProfiles(cbio, test_proj)
+# this can get the WHOLE dataset including everything, but kind of slow and space-extensive, so let's use specific function instead
+# test_obj <- cBioDataPack(test_proj, ask = FALSE)
+# profileID is project-specific
+prof_ID = temp_profile[temp_profile$name == "Protein expression (RPPA)", ]$molecularProfileId[1] 
+
+temp_rppa <- cBioPortalData(api=cbio, by = "entrezGeneId", studyId = test_proj, 
+  #genePanelId = "IMPACT341",
+  genes = merged_genes$entrezGeneId,
+  molecularProfileIds = prof_ID
+)
+rppa_data <- experiments(temp_rppa)[[prof_ID]]
+rppa_df <- as.data.frame(assay(rppa_data))
+dim(rppa_df)
+
+colnames(temp_metadata)
+table(temp_metadata$SEX)
+table(temp_metadata$RACE)
+
+
+
+
+# run deg: need to manually check group col and col values
+table(temp_metadata$CANCER_TYPE)
+table(temp_metadata$SUBTYPE)
+table(temp_metadata$CANCER_TYPE_DETAILED)
+table(temp_metadata$METASTASIS)
+
+View(temp_metadata)
+
+group_column="SEX"
+group_values=c("Female", "Male")
+
+group_column="RACE"
+group_values=c("White", "Asian")
+
+group_column="CANCER_TYPE_DETAILED"
+group_values=c("Colon Adenocarcinoma", "Rectal Adenocarcinoma")
+
+group_column="METASTASIS"
+group_values=c("M0", "M1")
+
+
+
+deg_input = prep_for_limma(metadata= temp_metadata, expr_matrix = rppa_df, group_column=group_column, group_values=group_values)
+rr <- limma(deg_input$expression, as.numeric(deg_input$group), r=1)
+pvals <- rr[,"F.p"]; adjP <- rr[,"F.adjp"]
+degs <- which(pvals<0.05)
+length(degs)
+
+
+
+
+# save to variable
+index_adjust = -3   # use this value to handle multiple selection from 1 project (+1) or skip 1 project (-1)
+
+project_status[[i + index_adjust]] = c(test_proj, dim(rppa_df), length(degs), group_column, group_values)
+project_df <- as.data.frame(do.call(rbind, project_status), stringsAsFactors = FALSE)
+colnames(project_df) <- c("Project", "nFeature", "nSample", "nDEG", "Group_Column", "Group1", "Group2")
+
+# save to file
+tail(project_df, 3)  # show last 3 row
+save(project_status, project_df, file="step5_out.rda")
+
+
+
+
+# transfer to latex
+library(xtable)
+latex_table <- xtable(project_df[,1:5])
+print(latex_table, type = "latex")
+
+
+#################### additional: check for metadata harmonization on those 73 projects
+# as I found they do show some sort of hamonzied variables (but not values)
+temp_ncol = c()
+temp_all_colnames = c()
+
+for (test_proj in selected_studies) {
+  print(test_proj)
+  temp_metadata <- clinicalData(cbio, test_proj)
+  temp_ncol = c(temp_ncol, dim(temp_metadata)[2])
+  temp_all_colnames = union(temp_all_colnames, colnames(temp_metadata))
+}
+
+# total col and uniq col
+print(sum(temp_ncol))
+print(length(temp_all_colnames))
+
+# Sort temp_ncol in ascending order and get sorted indices
+sorted_indices <- order(temp_ncol)  
+sorted_values <- temp_ncol[sorted_indices]  
+sorted_names <- selected_studies[sorted_indices]  
+barplot(sorted_values, names.arg = sorted_names, las = 2, col = "skyblue", main = "Sorted Bar Plot")
+
+# compare with gdc keys
+gdc_meta_file="/home/sliu/github/LLM_data_query/data_explore/gdc_meta.json"
+library(jsonlite)
+json_data <- fromJSON(gdc_meta_file)
+gdc_keys_vector <- names(json_data)
+overlap <- intersect(temp_all_colnames, toupper(gdc_keys_vector))
+print(length(overlap))
+
+
+```
+
+
+
+
