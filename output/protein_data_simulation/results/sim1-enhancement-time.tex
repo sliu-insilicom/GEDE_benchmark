@@ -1,0 +1,14 @@
+\ctable[caption={Computational cost (in seconds) of GEDE and several competing data enhancement methods. Dataset used in this analysis is Y, with no missing values nor outliers, so that competing methods (LASSO, XGBoost, and RandomForest) are applicable. Two methods are used to select the optimal L1 penalty in LASSO, one based on 5-fold CV, and the other one based on GCV. For competing enhancement methods, parallel computing is used to reduce computational cost. GEDE is applied with vprop=0.8 and HD method. Ym is a dataset with 10\% missing values.},label=tab:sim1-enhancement-time,pos=!tbp,]{lrrrrr}{}{\FL
+\multicolumn{1}{l}{}&\multicolumn{1}{c}{LASSO.CV}&\multicolumn{1}{c}{LASSO.GCV}&\multicolumn{1}{c}{XGBoost}&\multicolumn{1}{c}{RandomForest}&\multicolumn{1}{c}{GEDE}\ML
+Fold01&$6.9$&$2.0$&$47.0$&$8.1$&$0.137$\NN
+Fold02&$6.5$&$2.3$&$44.8$&$8.0$&$0.189$\NN
+Fold03&$7.4$&$2.9$&$49.4$&$8.2$&$0.135$\NN
+Fold04&$7.1$&$2.6$&$48.8$&$8.1$&$0.112$\NN
+Fold05&$6.7$&$2.7$&$52.6$&$8.5$&$0.124$\NN
+Fold06&$7.1$&$3.3$&$48.6$&$8.4$&$0.124$\NN
+Fold07&$7.3$&$3.2$&$49.6$&$8.6$&$0.133$\NN
+Fold08&$7.0$&$3.1$&$48.4$&$8.3$&$0.108$\NN
+Fold09&$7.6$&$3.2$&$49.8$&$8.3$&$0.138$\NN
+Fold10&$7.7$&$3.2$&$48.1$&$8.4$&$0.113$\NN
+Average&$7.1$&$2.8$&$48.7$&$8.3$&$0.131$\LL
+}

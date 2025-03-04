@@ -1,0 +1,14 @@
+\ctable[caption={Comparing GEDE with other imputation methods. Several different choices of penalty (L=5, 10, 20, 50, and 100) are applied in softImpute. GEDE is applied with vprop=0.8 and HD method. Ym is a dataset with 10\% missing values. Ymo is a dataset with 10\% missing values and 10\% outliers. To remove outliers, all methods that applied to Ymo includes a Hampel filter with nMAD=2.},label=tab:sim1-GEDE-other,pos=!tbp,]{lrrcrr}{}{\FL
+\multicolumn{1}{l}{\bfseries Method}&\multicolumn{2}{c}{\bfseries Ym}&\multicolumn{1}{c}{\bfseries }&\multicolumn{2}{c}{\bfseries Ymo}\NN
+\cline{2-3} \cline{5-6}
+\multicolumn{1}{l}{}&\multicolumn{1}{c}{CPU.Time}&\multicolumn{1}{c}{RMSE}&\multicolumn{1}{c}{}&\multicolumn{1}{c}{CPU.Time}&\multicolumn{1}{c}{RMSE}\ML
+softImpute.L5&$0.346$&$0.275$&&$0.516$&$0.319$\NN
+softImpute.L10&$0.305$&$0.324$&&$0.388$&$0.370$\NN
+softImpute.L20&$0.264$&$0.409$&&$0.351$&$0.442$\NN
+softImpute.L50&$0.278$&$0.529$&&$0.363$&$0.552$\NN
+softImpute.L100&$0.096$&$0.615$&&$0.099$&$0.615$\NN
+SVT&$8.506$&$0.255$&&$8.341$&$0.298$\NN
+mean&$0.013$&$0.466$&&$0.016$&$0.466$\NN
+median&$0.044$&$0.466$&&$0.031$&$0.467$\NN
+GEDE&$0.233$&$0.197$&&$0.242$&$0.246$\LL
+}

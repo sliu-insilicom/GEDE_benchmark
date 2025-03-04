@@ -24,6 +24,10 @@ library(xgboost)
 library(randomForest)
 library(Hmisc)
 
+# change output dir
+out_dir = "/home/sliu/github/GEDE_benchmark/output/protein_data_simulation"
+knitr::opts_knit$set(root.dir = "/home/sliu/github/GEDE_benchmark/output/protein_data_simulation")
+
 cbio <- cBioPortal()
 
 # cols are sampleID, match conditions from metadata for DEG
@@ -259,6 +263,903 @@ overlap <- intersect(temp_all_colnames, toupper(gdc_keys_vector))
 print(length(overlap))
 
 
+```
+
+### codes below are from previous steps (may need to clean script files)
+
+```{r 1.prep_input_data, message = FALSE}
+# first trial: not continued
+# we use blca_tcga_pub_2017 with 235 feature 344 samples and 67 DEGs
+# the group size is 44 vs 23
+# note the default is log2 value of expression
+
+
+# 2nd trial: “brca_tcga”
+# 236 feature, 892 sample, 92 DEG, condition race
+# note the default is log2 value of expression
+
+
+############# get data
+test_proj = "brca_tcga_pub2015"
+# metadata
+temp_metadata <- clinicalData(cbio, test_proj)
+# expression data
+temp_profile <- molecularProfiles(cbio, test_proj)
+prof_ID = temp_profile[temp_profile$name == "Protein expression (RPPA)", ]$molecularProfileId[1] 
+temp_rppa <- cBioPortalData(api=cbio, by = "entrezGeneId", studyId = test_proj, 
+  #genePanelId = "IMPACT341",
+  genes = merged_genes$entrezGeneId,
+  molecularProfileIds = prof_ID
+)
+rppa_data <- experiments(temp_rppa)[[prof_ID]]
+rppa_df <- as.data.frame(assay(rppa_data))
+dim(rppa_df)
+
+colnames(temp_metadata)
+table(temp_metadata$RACE)
+table(temp_metadata$CANCER_TYPE_DETAILED)
+
+# sub-select data by selected values only
+group_column="CANCER_TYPE_DETAILED"
+group_values=c("Breast Invasive Ductal Carcinoma", "Breast Invasive Lobular Carcinoma")
+# 1st value is baseline "0" in group variable
+deg_input = prep_for_limma(metadata= temp_metadata, expr_matrix = rppa_df, group_column=group_column, group_values=group_values)
+# change key name to be consistent with RNA-seq
+print(names(deg_input))
+names(deg_input) = c("counts", "group")
+
+# save(deg_input, file="step2.1_protein_profile_for_DEG.Rdata")
+
+
+
+
+
+```
+
+
+### from step1, L79
+```{r 2.examine_data, message = FALSE}
+# use a temporary variable so I don't alter the original contents
+Data = deg_input
+data <- Data$counts
+group <- Data$group
+dim(data)
+
+
+# 1. by total expression
+col_sums <- colSums(data, na.rm = TRUE)
+boxplot(col_sums, main = "Boxplot of Total Expression by Sample", horizontal = TRUE)
+
+lower_bound <- quantile(col_sums, 0.25) - 1.5 * IQR(col_sums)
+upper_bound <- quantile(col_sums, 0.75) + 1.5 * IQR(col_sums)
+outlier_indices <- which(col_sums < lower_bound | col_sums > upper_bound)
+data <- data[, -outlier_indices]
+group <- group[-outlier_indices]
+print(paste0("Remove ", length(outlier_indices) ," low depth data"))
+dim(data)
+
+# count and fileter missing
+sum(colSums(is.na(data)) > 0)    # 57
+sum(rowSums(is.na(data)) > 0)    # 9
+# 9/57 -> means 9 cols are completely missing, just delete them
+data <-  data[complete.cases(data), ]
+dim(data)
+
+# updated saved file
+deg_input$counts <- data
+deg_input$group <- group
+save(deg_input, file="step2.1_protein_profile_for_DEG.Rdata")
+
+
+
+
+# 2. PCA check
+# log_data = log2(data+1)  # protein is already log2
+data_t = t(data)   # row sample, col gene
+pca_result <- prcomp(data_t, center = TRUE, scale. = FALSE)
+
+pca_result <- prcomp(data_t, center = TRUE, scale. = FALSE)
+pca_summary <- summary(pca_result)
+top_10 <- pca_summary$importance[, 1:10]
+print(top_10)
+
+# plot PCA
+group_colors <- as.numeric(as.factor(group))  # Convert group categories to numeric
+color_palette <- rainbow(length(unique(group)))  # Create a color palette
+
+plot.new()
+plot(pca_result$x[, 1], pca_result$x[, 2], 
+     xlab = "PC1", ylab = "PC2", 
+     main = "PCA of Samples",
+     pch = 19, col = color_palette[group_colors])
+
+legend("topright", legend = unique(group), 
+       col = color_palette, pch = 19, title = "Groups")
+
+
+# 3. check for normality at gene level
+df1 = data[ , which(group=="0")]
+df2 = data[ , which(group=="1")]
+
+abnormal_gene1 = check_normality(df1, pvalue = 0.01 / dim(df1)[1])  # 146
+length(abnormal_gene1)
+abnormal_gene2 = check_normality(df2, pvalue = 0.01 / dim(df2)[1])  # 9
+length(abnormal_gene2)
+length(intersect(names(abnormal_gene1), names(abnormal_gene2)))
+
+# overlap
+print(abnormal_gene2)
+# normal genes in df1
+setdiff(rownames(df1), names(abnormal_gene1))
+
+
+gene_num = "8314"
+gene_num %in% names(abnormal_gene1)
+gene_num %in% names( abnormal_gene2)
+
+
+plot.new()
+par(mfrow = c(1, 2))  
+mtext(paste0("Q-Q Plots for Gene ", gene_num), side = 3, line = 0.5, cex = 1.5)
+temp_value1 = unlist(df1[gene_num, ])
+temp_value2 = unlist(df2[gene_num, ])
+qqnorm(temp_value1, main = "Ductal Carcinoma")
+qqline(temp_value1, col = "red")
+
+qqnorm(temp_value2, main = "Lobular Carcinoma")
+qqline(temp_value2, col = "red")  
+
+
+
+```
+
+
+```{r 3.simulation, message = FALSE}
+Data <- deg_input
+
+# we don't do random sample because there are only 200 genes
+
+
+## Group-wise Outlier Winsorization, not the input requires Matrix data strucuture
+Y1 <- as.matrix(deg_input$counts)
+Y1w <- Y1; out.n <- 0
+for (i in 1:nrow(Y1)){
+  o <- GrpHampel(Y1[i,], Grp=Data$group, nMAD=4, winsorize=TRUE, with.out.ids=TRUE)
+  Y1w[i,] <- o$X; out.n <- out.n+length(o$out.ids)
+}
+round(100*out.n/length(Y1w), 2) # 1.19% outliers were winsorized (replace extrame values by the boundary L and U)
+# Xing's data is 1.51% TCGA lung
+
+
+## Get Cov matrix for the outlier-adjusted matrix
+CovY <- cov(t(Y1w))
+ee <- eigen(CovY, symmetric=TRUE)
+lambdas <- ee$values
+# SL note: kstar, optimal number of principal components to retain 
+kstar <- K.est(lambdas, l.remain=0, n=n1+n2, m=1000, method="vprop")  
+kstar #28    # TCGA lung 102
+# extract matrix for th 80 PC
+Tk <- ee$vectors[, 1:kstar]
+## estimate the first K eigenvalues
+n <- ncol(Y1w); m <- nrow(Y1w); mstar <- min(m, n-1)
+# sigma2 an estimate of the residual variance that is not captured by the first kstar principal components.
+sigma2 <- mstar/(m*(mstar-kstar)) *sum(lambdas[-(1:kstar)])
+# SL note: LK represents the adjusted eigenvalues (remove the contribution of the residual variance sigma2)
+Lk <- lambdas[1:kstar]-m/mstar*sigma2
+range(Lk); sigma2
+
+vp <- cumsum(lambdas)[1:120]/sum(lambdas)
+pdf("./results/screeplot1.pdf", height=6, width=6)
+plot.new()
+plot(vp, type="l", xlab="Principal Components", ylab="Proportion of variance explained")
+points(vp, pch=19, cex=.5)
+abline(h=0.8, lty=2); points(x=kstar, y=vp[kstar], col=2, pch=19)
+dev.off()
+
+
+
+### select degs based on winowised data
+DEGs <- run_limma(df_transformed = Y1w, meta_vector=group, pvalue=0.05, betahat=0.3)
+length(DEGs)
+
+
+
+## create an object that contains all the estimated parameters. 
+# SL note: store mean exp for both conditions (only need beta1 dif for DEGs)
+beta0 <- rowMeans(Y1w); beta1 <- rep(0, m)
+Grp = group # for consistentcy
+for (j in DEGs) {
+  beta0[j] <- mean(Y1w[j, Grp==0])
+  ## Remember that groupwhite is the baseline group, so beta1
+  ## represents the groupblack
+  beta1[j] <- mean(Y1w[j, Grp==1]) -beta0[j]
+}
+oracle <- list(betahat=rbind(beta0=beta0, Grp=beta1),
+               Tk=Tk, K=kstar, Lk=lambdas[1:kstar], sigma2=sigma2)
+save(DEGs, oracle, file="sim_params.rda")
+
+
+
+
+
+
+### simulation (step2 L217)
+# script, sim-datagen.r, https://www.dropbox.com/preview/new_GEDE/simulations/sim-datagen.r?role=personal 
+objs <- load("sim_params.rda")
+
+######################################################################
+## Generate two sets of simulated data
+######################################################################
+n.A <- n.B <- 200; n <- n.A+n.B
+Grp <- c(rep(0,n.A), rep(1, n.B))  # this is arbitrary group infor for simulation
+X <- cbind(Intercept=rep(1, n), Grp)
+
+set.seed(11111)
+## sim1 is a dataset with two groups
+# n is sample size, oracle stores beta0 and beta1, etc.
+sim1 <- PPCA.datagen(n, oracle, Grp, miss.prop=0.1, out.prop=0.1)
+
+
+## sim2 is a dataset with five groups: add additional beta2 (to replace beta1) for groups to set DEG different between groups
+# it uses 1 1 0 0 permutation so 2 groups will be different from baseline, the other 2 not
+m <- ncol(sim1$Ytrue); N <- n*m
+nG <- 5
+Grp2.categorical <- sample(paste0("G", 1:nG), size=n, replace=TRUE)
+Grp2 <- model.matrix(~Grp2.categorical)[, -1]
+colnames(Grp2) <- paste0("G", 2:nG)
+## created the effect sizes
+beta2 <- matrix(0, nrow=nG-1, ncol=m); rownames(beta2) <- paste0("G", 2:nG)
+## for each DEG, 2 groups (other than G1) have different mean values (use 1 1 0 0 permutation)
+## than G1
+gg <- c(c(1,1), rep(0, nG-3))
+beta2[, DEGs] <- 2.0*sapply(DEGs, function(i) sample(gg))
+## beta2[, DEGs] <- 2.0*(rbinom(n=length(DEGs)*(nG-1), size=1, prob=.5))
+oracle2 <- oracle; oracle2$betahat <- rbind(beta0=oracle$betahat["beta0",], beta2)
+sim2 <- PPCA.datagen(n, oracle2, Grp2, miss.prop=0.1, out.prop=0.1)
+
+
+
+######################################################################
+## 04/28/2024. A new simulation data for multiple regression analysis,
+## with true K=10 and 6 regressors
+######################################################################
+# SL note: simulates gene expression data influenced by 6 predictors with predefined associations (
+genes per predictor).
+# Noise, missing values, and outliers are added for realism.
+# It allows testing multiple regression models, particularly under known predictor-gene relationships.
+
+set.seed(22222)
+p <- 6
+X3 <- matrix(rnorm(n*p), n)
+## standardize the regressors
+X3s <- as.matrix(scale(X3)); colnames(X3s) <- paste0("x", 1:p)
+## each x_j is associated with 50 genes
+m1.each <- 20; m1 <- m1.each*p
+b3 <- lapply(1:p, function(j) t(runif(m1.each, min=.5, max=1)))
+beta3 <- as.matrix(cbind(bdiag(b3), matrix(0, p, m-m1)))
+##
+## re-estimate sigma2 from oracle with new K=10
+Ktrue3 <- 10; Lk.sim3 <- oracle$Lk[1:Ktrue3]
+sigma2.sim3 <- (sum(oracle$Lk)+m*oracle$sigma2-sum(Lk.sim3))/m
+oracle3 <- list(betahat=rbind(beta0=oracle$betahat["beta0",], beta3),
+                Tk=oracle$Tk[, 1:Ktrue3], K=Ktrue3,
+                Lk=Lk.sim3, sigma2=sigma2.sim3)
+sim3 <- PPCA.datagen(n, oracle3, X3, miss.prop=0.1, out.prop=0.1)
+
+
+## save the simulated data
+save(sim1, sim2, sim3, X, X3s, Grp, Grp2, DEGs, oracle, oracle2, oracle3, beta3, m, m1.each, m1, p, n, N, file="simdata.rda")
+
+```
+
+
+### now use step3 to run simulation analysis
+```{r 4.simu_results, message = FALSE}
+### L26
+######################################################################
+## Parameter estimation (using sim1)
+######################################################################
+attach(sim1) #Ytrue, Y, Ym, Ymo, miss.idx, and out.idx
+
+
+E2S <- function(Est) Est$Tk%*%diag(Est$Lk)%*%t(Est$Tk) +Est$sigma2
+SigmaY <- oracle$Tk%*%diag(oracle$Lk)%*%t(oracle$Tk) +oracle$sigma2
+##
+myest.Y <- RobEst(Y, X=Grp, K.method="vprop")
+myest.Y.1gp <- RobEst(Y, K.method="vprop") #one-group case
+myest.Ym <- RobEst(Ym, X=Grp, K.method="vprop")
+myest.Ymo <- RobEst(Ymo, X=Grp, K.method="vprop")
+
+
+SigmaEsts.cov <- SigmaEsts.RobEst <- list()
+## Estimates based on sample cov. Note that these options are not available for Ym: (a) "everything", "all.obs", and "na.or.complete" are not available due to NAs, and(b) "complete.obs" is not available because (almost) no observation is complete. The ONLY available option is "pairwise.complete.obs".
+
+
+## compute the centered versions of Y, Ym, and Ymo
+X <- cbind(Intercept=rep(1, n), Grp)
+Yc <- lm.fit(X, Y)$residuals
+Ymc <- apply(Ym, 2, function(y) y-tapply(y, Grp, mean, na.rm=TRUE)[as.character(Grp)])
+Ymoc <- apply(Ymo, 2, function(y) y-tapply(y, Grp, mean, na.rm=TRUE)[as.character(Grp)])
+##
+SigmaEsts.cov$Y.1gp <- cov(Y) #one-grp case
+SigmaEsts.cov$Y <- cov(Yc)
+SigmaEsts.cov$Ym <- cov(Ymc, use="pairwise.complete.obs")
+SigmaEsts.cov$Ymo <- cov(Ymoc, use="pairwise.complete.obs")
+
+
+## RobEsts
+SigmaEsts.RobEst$Y.1gp <- E2S(myest.Y.1gp)
+SigmaEsts.RobEst$Y <- E2S(myest.Y)
+SigmaEsts.RobEst$Ym <- E2S(myest.Ym)
+SigmaEsts.RobEst$Ymo <- E2S(myest.Ymo)
+##
+rr.cov <- sapply(SigmaEsts.cov, function(S) rmse(S, SigmaY))
+rr.RobEst <- sapply(SigmaEsts.RobEst, function(S) rmse(S, SigmaY))
+cc.cov <- sapply(SigmaEsts.cov, function(S) cor(as.vector(S), as.vector(SigmaY)))
+cc.RobEst <- sapply(SigmaEsts.RobEst, function(S) cor(as.vector(S), as.vector(SigmaY)))
+
+
+## the first two columns are for cov(); second two columns are for RobEst()
+tab.est <- cbind(RMSE=rr.cov, Cor=cc.cov, RMSE=rr.RobEst, Cor=cc.RobEst); tab.est
+
+######################################################################
+## Performance of imputation based on Ym
+######################################################################
+
+
+## Tab.K, internal comparison of GEDE with different options, with
+## focus on K. Takes about 2~3 minutes.
+YF <- list(); tt <- list(); kk <- list()
+tt[["GEDE.REk"]] <- system.time({
+  o <- GEDE(Ym, X=Grp, nMAD=NULL)
+  YF[["GEDE.REk"]] <- o$Ystar
+})[["elapsed"]]; kk$GEDE.REk <- o$K
+##
+tt[["GEDE.REk.HD"]] <- system.time({
+  o <- GEDE(Ym, X=Grp, HD=TRUE, nMAD=NULL)
+  YF[["GEDE.REk.HD"]] <- o$Ystar
+})[["elapsed"]]; kk$GEDE.REk.HD <- o$K
+##
+tt[["GEDE.vprop"]] <- system.time({
+  o <- GEDE(Ym, X=Grp, K.method="vprop", nMAD=NULL)
+  YF[["GEDE.vprop"]] <- o$Ystar
+})[["elapsed"]]; kk$GEDE.vprop <- o$K
+##
+tt[["GEDE.vprop.HD"]] <- system.time({
+  o <- GEDE(Ym, X=Grp, K.method="vprop", HD=TRUE, nMAD=NULL)
+  YF[["GEDE.vprop.HD"]] <- o$Ystar
+})[["elapsed"]]; kk$GEDE.vprop.HD <- o$K
+##
+for (k in c(15, 30, 45, 60, 80)) {
+  mn <- paste0("GEDE.K", k)
+  tt[[mn]] <- system.time(YF[[mn]] <- GEDE(Ym, X=Grp, K=k, nMAD=NULL)$Ystar)[["elapsed"]]
+  kk[[mn]] <- k
+  ##
+  mn2 <- paste0(mn, ".HD")
+  tt[[mn2]] <- system.time(YF[[mn2]] <- GEDE(Ym, X=Grp, K=k, HD=TRUE, nMAD=NULL)$Ystar)[["elapsed"]]
+  kk[[mn2]] <- k
+}
+
+
+RMSE <- sapply(YF, function(yf) sqrt(mean((yf[miss.idx]-Ytrue[miss.idx])^2)))
+tab.K <- cbind(K=unlist(kk), CPU.Time=unlist(tt), RMSE=RMSE)
+## sort on K
+tab.K <- tab.K[order(tab.K[,"K"]),]
+## split the HD versions from the standard ones, and recombine them
+tab.K.1 <- tab.K[!grepl(".*HD", rownames(tab.K)),]
+tab.K.2 <- tab.K[grepl(".*HD", rownames(tab.K)), -1]
+tab.K <- cbind(tab.K.1, tab.K.2)
+tab.K
+
+## I am going to save GEDE.vprop.HD for later use
+rr.vprop.HD <- tab.K.2["GEDE.vprop.HD",]
+
+
+
+### L127, r3
+######################################################################
+## From now on, we will only use GEDE with the HD approach and vprop
+## option. Next table is about using a subset of features to predict
+## missing values
+######################################################################
+YF <- list(); tt <- list()
+Npred <- c(20, 40, 80, 120, 160)
+for (npred in Npred) {
+  mn <- paste0("GEDE.npred", npred)
+  tt[[mn]] <- system.time(YF[[mn]] <- GEDE(Ym, X=Grp, predictors=1:npred, K.method="vprop", HD=TRUE, nMAD=NULL)$Ystar)[["elapsed"]]
+}
+RMSE <- sapply(YF, function(yf) sqrt(mean((yf[miss.idx]-Ytrue[miss.idx])^2)))
+tab.npred <- cbind(npred=Npred, CPU.Time=unlist(tt), RMSE=RMSE)
+## combine with rr.vprop.HD
+tab.npred <- rbind(tab.npred, c(npred=m, rr.vprop.HD))
+## get rid of rownames
+rownames(tab.npred) <- NULL
+tab.npred
+
+######################################################################
+## Compare GEDE (vprop, HD, all features) with other methods
+######################################################################
+YF <- list(); tt <- list()
+for (L in c(5, 10, 20, 50, 100)) {
+  mn <- paste0("softImpute.L",L)
+  tt[[mn]] <- system.time(YF[[mn]] <- imputation(Ym, Grp=Grp, method="softImpute", lambdas=L, nMAD=NULL))[["elapsed"]]
+}
+## Note that SVT is very time consuming.
+for (mn in c("SVT", "mean", "median")) {
+  tt[[mn]] <- system.time(YF[[mn]] <- imputation(Ym, Grp=Grp, method=mn, nMAD=NULL))[["elapsed"]]
+}
+##
+RMSE <- sapply(YF, function(yf) sqrt(mean((yf[miss.idx]-Ytrue[miss.idx])^2)))
+tab.other.m <- cbind(CPU.Time=unlist(tt), RMSE=RMSE)
+## combine with rr.vprop.HD
+tab.other.m <- rbind(tab.other.m, GEDE=rr.vprop.HD)
+
+
+## with outliers. Set mMAD=2
+YF <- list(); tt <- list()
+for (L in c(5, 10, 20, 50, 100)) {
+  mn <- paste0("softImpute.L",L)
+  tt[[mn]] <- system.time(YF[[mn]] <- imputation(Ymo, Grp=Grp, method="softImpute", lambdas=L, nMAD=2))[["elapsed"]]
+}
+##
+for (mn in c("SVT", "mean", "median")) {
+  tt[[mn]] <- system.time(YF[[mn]] <- imputation(Ymo, Grp=Grp, method=mn, nMAD=2))[["elapsed"]]
+}
+## add GEDE
+tt[["GEDE"]] <- system.time(YF[["GEDE"]] <- GEDE(Ymo, X=Grp, K.method="vprop", HD=TRUE, nMAD=2)$Ystar)[["elapsed"]]
+
+
+##
+RMSE <- sapply(YF, function(yf) sqrt(mean((yf[miss.idx]-Ytrue[miss.idx])^2)))
+tab.other.o <- cbind(CPU.Time=unlist(tt), RMSE=RMSE)
+
+## combine tab.other with tab.other.o
+tab.other <- cbind(tab.other.m, tab.other.o)
+
+tab.other
+
+
+
+
+
+### L195, r4, compare enhancement
+# start with enhancement
+######################################################################
+## Enhancement / 10-fold CV
+######################################################################
+set.seed(321)
+cvsplit <- createFolds(1:n, k=10)
+
+
+## run2 <- function(test.idx) {
+##   train.idx <- setdiff(1:n, test.idx)
+##   Ytrue.k <- Ytrue[test.idx,] #this is the "gold standard"
+##   ## Y does not have NAs nor outliers; so lasso is applicable
+##   Ytrain.k <- Y[train.idx,]; Ytest.k <- Y[test.idx, ]
+##   tt <- c(); Ystars <- list()
+##   tt["GEDE"] <- system.time( Ystars[["GEDE"]] <- Enhancer(Ytrain.k, Ytest.k, X.train=Grp[train.idx], X.test=Grp[test.idx], K.method="vprop", HD=TRUE, nMAD=NULL)$Ystar )[["elapsed"]]
+##   tt["LASSO.CV"] <- system.time(Ystars[["LASSO.CV"]] <- Enhancer(Ytrain.k, Ytest.k, X.train=Grp[train.idx], X.test=Grp[test.idx], method="lasso", mc.cores=ncores-1)$Ystar)[["elapsed"]]
+##   ## lasso2 uses GCV therefore faster than lasso (uses CV)
+##   tt["LASSO.GCV"] <- system.time(Ystars[["LASSO.GCV"]] <- Enhancer(Ytrain.k, Ytest.k, X.train=Grp[train.idx], X.test=Grp[test.idx], method="lasso2", mc.cores=ncores-1)$Ystar)[["elapsed"]]
+##   ## xgboost
+##   tt["Xgboost"] <- system.time(Ystars[["Xgboost"]] <- Enhancer(Ytrain.k, Ytest.k, X.train=Grp[train.idx], X.test=Grp[test.idx], method="xgboost")$Ystar)[["elapsed"]]
+##   ## random forest
+##   tt["LASSO.GCV"] <- system.time(Ystars[["LASSO.GCV"]] <- Enhancer(Ytrain.k, Ytest.k, X.train=Grp[train.idx], X.test=Grp[test.idx], method="lasso2", mc.cores=ncores-1)$Ystar)[["elapsed"]]
+##   ##
+##   rmse.k <- sapply(Ystars, rmse, truth=Ytrue.k)
+##   return(list(RMSE=rmse.k, Time=tt))
+## }
+
+
+run2 <- function(test.idx, Y, Ytrue, X) {
+  methods <- c("LASSO.CV"="lasso", "LASSO.GCV"="lasso2", "XGBoost"="XGBoost", "RandomForest"="RF")
+  n <- nrow(Y)
+  train.idx <- setdiff(1:n, test.idx)
+  ## Y cannot have NAs or outliers
+  Ytrain <- Y[train.idx,]; Ytest <- Y[test.idx, ]
+  tt <- c(); Ystars <- list()
+  for (mm in names(methods)) {
+    tt[[mm]] <- system.time(
+      Ystars[[mm]] <- Enhancer(Ytrain, Ytest, X.train=X[train.idx], X.test=X[test.idx], method=methods[[mm]], mc.cores=ncores-1)$Ystar
+    )[["elapsed"]]
+  }
+  ## GEDE needs some extra parameters
+  tt["GEDE"] <- system.time(
+    Ystars[["GEDE"]] <- Enhancer(Ytrain, Ytest, X.train=X[train.idx], X.test=X[test.idx], K.method="vprop", HD=TRUE, nMAD=NULL)$Ystar
+  )[["elapsed"]]
+  ## 
+  rmses <- sapply(Ystars, rmse, truth=Ytrue[test.idx,], relative=TRUE)
+  return(list(RMSE=rmses, Time=tt))
+}
+
+ncores = 64
+## warning: it takes about 4 hours to run the following loop
+t.run2 <- system.time(oo <- lapply(cvsplit, function(test.idx) {
+  run2(test.idx, Y=Y, Ytrue=Ytrue, X=Grp)
+}))
+t.run2
+
+
+rtab3 <- t(sapply(oo, function(o) o$RMSE))
+ttab3 <- t(sapply(oo, function(o) unlist(o$Time)))
+rtab3
+ttab3
+
+
+## colnames(rtab3) <- colnames(ttab3) <- names(o$Time)
+
+
+## combine them
+tab.enhancement <- as.matrix(cbind(ttab3, rtab3))
+tab.enhancement <- rbind(tab.enhancement, Average=colMeans(tab.enhancement))
+
+
+
+
+
+### L271, r5 hypo test
+######################################################################
+## Hypothesis testing
+######################################################################
+nDEGs <- setdiff(1:m, DEGs)
+DEGs.bin <- rep(0,m); DEGs.bin[DEGs] <- 1
+## Now apply GEDE and LASSO (GCV) to the data, and conduct HT to
+## select DEGs. For now, the DEGs are defined as raw p-value < 0.05.
+htfun <- function(Est, Grp, DEGs.bin, fc.thresh=0) {    
+  Y <- Est$Ystar
+  if (is.null(Est$Tk)) { #the original data
+    r.adj <- 1
+  } else {
+    r.adj <- t.adj.coef(Est)
+  }
+  rr <- limma(t(Y), Grp, r=r.adj)
+  ## rr <- limma(t(Y), Grp)
+  DEGs <- which(DEGs.bin==1)
+  m1 <- length(DEGs); m0 <- sum(DEGs.bin==0)
+  #pvals <- rr[,"t.p.Grp"]; adjP <- rr[,"t.adjp.Grp"]   
+  # this used in sim2
+  pvals <- rr[,"F.p"]; adjP <- rr[,"F.adjp"]
+  #fc <- abs(rr[,"betahat.Grp"])
+  degs <- which(pvals<0.05)
+  ## degs <- which(pvals<0.05 & fc > fc.thresh)  
+  return(c(TPR=100*length(intersect(degs, DEGs))/m1,
+           FPR=100*length(setdiff(degs, DEGs))/m0,
+           AUC=100*auc(DEGs.bin, 1-pvals)))
+}
+
+
+## internal comparison of K. It takes about 2G memory and ~20min
+## to finish. HTK stands for Hypothesis Testing with different
+## Ks.
+set.seed(12345)
+Ks <- 1:12  
+nreps <- 100
+
+#ns <- c(50, 60, 70)
+ns <- c(150, 175, 200)
+
+## 
+t1 <- system.time(RR.HTK <- lapply(ns, function(nk) {
+  lapply(1:nreps, function(i) {
+    ## subset
+    idx <- sample(1:n, size=nk)
+    Yk <- Y[idx,]; Grp.k <- Grp[idx]
+    ## enhancement
+    ee <- lapply(Ks, function(k) Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K=k, HD=TRUE, nMAD=NULL)); names(ee) <- paste0("K", Ks)
+    ## HT
+    sapply(ee, function(Est) htfun(Est, Grp=Grp.k, DEGs.bin=DEGs.bin))
+  })
+}))
+names(RR.HTK) <- paste0("n", ns)
+lst.HTK.mean <- lapply(RR.HTK, function(lst) Reduce("+", lst)/nreps)
+print("this is sim1 data")
+lst.HTK.mean
+## save(lst.HTK.mean, RR.HTK, Ks, file="HTK.rda")
+
+
+## For sim2
+htfun2 <- function(Est, Grp, DEGs.bin) {
+  Y <- Est$Ystar
+  if (is.null(Est$Tk)) { #the original data
+    r.adj <- 1
+  } else {
+    r.adj <- t.adj.coef(Est)
+  }
+  rr <- limma(t(Y), Grp, r=r.adj)
+  ## rr <- limma(t(Y), Grp)
+  DEGs <- which(DEGs.bin==1)
+  m1 <- length(DEGs); m0 <- sum(DEGs.bin==0)
+  pvals <- rr[,"F.p"]; adjP <- rr[,"F.adjp"]
+  degs <- which(pvals<0.05)
+  return(c(TPR=100*length(intersect(degs, DEGs))/m1,
+           FPR=100*length(setdiff(degs, DEGs))/m0,
+           AUC=100*auc(DEGs.bin, 1-pvals)))
+}
+## 
+set.seed(12345)
+ns2 <- c(50, 60, 70)
+## 
+t1b <- system.time(RR2.HTK <- lapply(ns2, function(nk) {
+  lapply(1:nreps, function(i) {
+    ## randomization; but need to ensure that each group has at least
+    ## three subjects
+    n.min <- 0
+    while (n.min<3) {
+      idx <- sample(1:n, size=nk); Grp.k <- Grp2[idx,]
+      n.min <- min(colSums(Grp.k))
+    }
+    Yk <- sim2$Y[idx,]; 
+    ## enhancement
+    ee <- lapply(Ks, function(k) Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K=k, HD=TRUE, nMAD=NULL)); names(ee) <- paste0("K", Ks)
+    ## HT
+    sapply(ee, function(Est) htfun2(Est, Grp=Grp.k, DEGs.bin=DEGs.bin))
+  })
+}))
+names(RR2.HTK) <- paste0("n", ns2)
+lst2.HTK.mean <- lapply(RR2.HTK, function(lst) Reduce("+", lst)/nreps)
+## save(lst.HTK.mean, RR.HTK, Ks, file="HTK.rda")
+print("this is sim2 data")
+lst2.HTK.mean
+
+
+## save the results in "sim_results.rda" (next step LASSO is very slow, so save here as back up)
+# need to check if some vars are generated in next steps
+
+# save(oracle, oracle2, Grp, Grp2, SigmaY, SigmaEsts.cov, SigmaEsts.RobEst, tab.est, tab.K, tab.npred, tab.other, rtab3, ttab3, tab.enhancement, ns, ns2, ns3, Ks, Ks3, nreps, lst2.HTK.mean, lst.HTK.mean, lst.HT.mean, RR.HTK, RR3.HTK.mean, t1, t1b, t2, t.run2, t3, file="sim_results.rda")
+
+
+## compare GEDE with LASSO
+set.seed(12345)
+ns3 <- seq(40, 80, 5)
+## ns <- seq(20, 40, 2); nreps <- 100
+## Only a few minutes for GEDE. Much more time consuming with LASSO.
+t2 <- system.time(RR.HT <- lapply(ns3, function(nk) {
+  lapply(1:nreps, function(i) {
+    ## subset
+    idx <- sample(1:n, nk)
+    Yk <- Y[idx,]; Grp.k <- Grp[idx]
+    ## enhancement
+    ee <- list(Orig=list(Ystar=Yk),
+           GEDE.vprop=Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K.method="vprop", HD=TRUE, nMAD=NULL),
+           GEDE.K1=Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K=1, HD=TRUE, nMAD=NULL),
+           GEDE.K5=Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, K=5, HD=TRUE, nMAD=NULL),
+           LASSO.GCV=Enhancer(Yk, Yk, X.train=Grp.k, X.test=Grp.k, method="lasso2", mc.cores=ncores-1)
+           )
+    ## HT
+    sapply(ee, function(Est) htfun(Est, Grp=Grp.k, DEGs.bin=DEGs.bin))
+  })
+}))
+
+names(RR.HT) <- paste0("n", ns3)
+print("SL: this seems sim1. compare GEDE with LASSO")
+lst.HT.mean <- lapply(RR.HT, function(lst) Reduce("+", lst)/nreps)
+lst.HT.mean
+
+
+
+
+
+## A new simulation data, sim3, with true K=10 and p=6 regressors
+htfun3 <- function(Est, X, m1.each, fc.thresh=0) {
+  Y <- Est$Ystar; m <- ncol(Y); p <- ncol(X)
+  if (is.null(Est$Tk)) { #the original data
+    r.adj <- 1
+  } else {
+    r.adj <- t.adj.coef(Est)
+  }
+  rr <- limma(t(Y), X, r=r.adj)
+  ## two types of DEGs
+  m1 <- m1.each*p
+  DEGs.F.bin <- rep(0,m); DEGs.F.bin[1:m1] <- 1
+  DEGs.F <- which(DEGs.F.bin==1) #overall DEGs
+  DEGs.F.bin <- 1:m %in% DEGs.F
+  pvals.F <- rr[, "F.p"]; degs.F <- which(pvals.F<0.05)
+  ss.F <- c("TPR.F"=100*length(intersect(degs.F, DEGs.F))/m1,
+            "FPR.F"=100*length(setdiff(degs.F, DEGs.F))/(m-m1),
+            "AUC.F"=100*auc(DEGs.F.bin, 1-pvals.F))
+  ##
+  ss.t <- matrix(0, nrow=p, ncol=3)
+  colnames(ss.t) <- c("TPR.t", "FPR.t", "AUC.t")
+  for (j in 1:p) {
+    DEGs.j.bin <- rep(0, m); DEGs.j.bin[(m1.each*(j-1)+1):(m1.each*j)] <- 1
+    DEGs.j <- which(DEGs.j.bin==1)
+    pvals.j <- rr[, paste0("t.p.x",j)]; degs.j <- which(pvals.j<0.05)
+    ss.t[j, "TPR.t"] <- 100*length(intersect(degs.j, DEGs.j))/m1.each
+    ss.t[j, "FPR.t"] <- 100*length(setdiff(degs.j, DEGs.j))/(m-m1.each)
+    ss.t[j, "AUC.t"] <- 100*auc(DEGs.j.bin, 1-pvals.j)
+  }
+  ## 
+  return(c(ss.F, colMeans(ss.t)))
+}
+
+
+## just use a fixed sample size for illustration
+nk <- 50; Ks3 <- c(1:9, seq(10, 40), 41:48)
+t3 <- system.time(RR3.HTK <- lapply(1:nreps, function(i) {
+  idx <- sample(1:n, nk)
+  Yk <- sim3$Y[idx, ]; Xk <- X3s[idx, ]
+  ## ## check estimated K
+  ## re.k <- RobEst(Yk, Xk, K.method="vprop")
+  ee <- list(Orig=list(Ystar=Yk))
+  for (k in Ks3) ee[[paste0("GEDE.K", k)]] <- Enhancer(Yk, Yk, X.train=Xk, X.test=Xk, K=k, HD=TRUE, nMAD=NULL)
+  return(sapply(ee, function(Est) htfun3(Est, Xk, m1.each)))
+}))
+## 
+RR3.HTK.mean <- Reduce("+", RR3.HTK)/nreps
+t(RR3.HTK.mean)
+
+
+## save the results in "sim_results.rda"
+save(oracle, oracle2, Grp, Grp2, SigmaY, SigmaEsts.cov, SigmaEsts.RobEst, tab.est, tab.K, tab.npred, tab.other, rtab3, ttab3, tab.enhancement, ns, ns2, ns3, Ks, Ks3, nreps, lst2.HTK.mean, lst.HTK.mean, lst.HT.mean, RR.HTK, RR3.HTK.mean, t1, t1b, t2, t.run2, t3, file="sim_results.rda")
+
+
+
+
+## ########## temp area ##########
+## ee1 <- Enhancer(Y, Y, X.train=Grp, X.test=Grp, K=1, HD=TRUE, nMAD=NULL)
+## r1 <- t.adj.coef(ee1)
+## rr1 <- limma(t(ee1$Ystar), Grp, r.adj=r1)
+
+
+## ## 
+## Y2 <- sim2$Y
+## ee2 <- Enhancer(Y2, Y2, X.train=Grp2, X.test=Grp2, K=1, HD=TRUE, nMAD=NULL)
+## r2 <- t.adj.coef(ee2)
+## rr2 <- limma(t(ee2$Ystar), Grp2, r.adj=r2)
+
+```
+
+
+### generate figure from step4
+```{r 3.make_figures, message = FALSE}
+### L18, r1_param est
+w <- latex(tab.est, label="tab:sim1-est", ctable=FALSE, cdec=c(3, 3, 3, 3),
+           file="results/sim1-est.tex", rowlabel="Dataset",
+           cgroup=c("\\texttt{cov()}", "\\texttt{RobEst()}"),
+           n.cgroup=c(2,2),
+           caption="Accuracy of covariance estimation. Sample covariance are computed by using \\texttt{cov()} function with option \\texttt{use=pairwise.complete.obs}. RMSE: root mean squared error between the estimated covariance and the oracle values. Cor: Pearson correlation between the estimated covariance and the oracle values. Datasets being used are $Y$ (the original simulated data), $Y^{m}$ (simulated data with 10\\% missing values), and $Y^{mo}$ (simulated data with 10\\% missing values and 10\\% artificial outliers). For rows Y, Ym, and Ymo, the estimates are pooled covariance matrix estimated from the two groups; for Y.1gp, the covariance estimators are directly applied to $Y$ without using the grouping information.")
+
+
+
+
+## To compare the true and estimated covariance for the first 10 genes
+idx <- 1:10 # use the first 10 genes
+pdf("results/sim-cov.pdf", height=10, width=10)
+par(mfrow=c(2,2))
+mplot(SigmaY[idx,idx], main="(a)")
+mplot(SigmaEsts.RobEst$Y[idx,idx], main="(b)");
+mplot(SigmaEsts.RobEst$Ym[idx,idx], main="(c)")
+mplot(SigmaEsts.RobEst$Ymo[idx,idx], main="(d)")
+dev.off()
+
+
+
+### L41, r2_GEDE_dif_k
+######################################################################
+## Internal comparison of GEDE with different choices of K
+######################################################################
+w <- latex(tab.K, label="tab:sim1-GEDE-K", ctable=TRUE, cdec=c(0, 3, 3, 3, 3),
+           file="results/sim1-GEDE-K.tex", rowlabel="Method",
+           cgroup=c("", "Standard", "HD"), n.cgroup=c(1,2,2),
+           caption="Computational cost and accuracy of GEDE as an imputation method, with various choices of number of PCs ($K$). Two algorithms of GEDE are used: the standard method and the HD method. For methods GEDE.REk and GEDE.vprop, number of PCs (K) is automatically selected by the REk criterion and the proportion of variance explained at 80\\% level (vprop=0.8), respectively.")
+
+
+######################################################################
+## Internal comparison of GEDE with different number of predictors
+######################################################################
+w <- latex(tab.npred, label="tab:sim1-GEDE-npred", ctable=TRUE, cdec=c(0, 3, 3),
+           file="results/sim1-GEDE-npred.tex", rowlabel="",
+           caption="Computational cost and accuracy of GEDE as an imputation method, with various number of genes ($npred$, out of a total of $m=1,000$ genes) used in the imputation. Number of PCs (K) is automatically selected with option vprop=0.8.")
+
+
+
+### L65, r3_compare methods
+######################################################################
+## Comparing GEDE with other imputation methods
+######################################################################
+w <- latex(tab.other, label="tab:sim1-GEDE-other", ctable=TRUE, cdec=c(3, 3, 3, 3),
+           file="results/sim1-GEDE-other.tex", rowlabel="Method",
+           cgroup=c("Ym", "Ymo"), n.cgroup=c(2,2),
+           caption="Comparing GEDE with other imputation methods. Several different choices of penalty (L=5, 10, 20, 50, and 100) are applied in softImpute. GEDE is applied with vprop=0.8 and HD method. Ym is a dataset with 10\\% missing values. Ymo is a dataset with 10\\% missing values and 10\\% outliers. To remove outliers, all methods that applied to Ymo includes a Hampel filter with nMAD=2.")
+
+
+######################################################################
+## Comparing GEDE with LASSO in enhancing the data
+######################################################################
+tab.enhancement.time <- tab.enhancement[, 1:5]
+tab.enhancement.rmse <- tab.enhancement[, 6:10]
+
+
+
+
+w <- latex(tab.enhancement.rmse, label="tab:sim1-enhancement-rmse",
+           ctable=TRUE, cdec=rep(3, 5),
+           file="results/sim1-enhancement-rmse.tex", rowlabel="",
+           caption="Performance of GEDE and several competing data enhancement methods. Dataset used in this analysis is Y, with no missing values nor outliers, so that competing methods (LASSO, XGBoost, and RandomForest) are applicable. Two methods are used to select the optimal L1 penalty in LASSO, one based on 5-fold CV, and the other one based on GCV. GEDE is applied with vprop=0.8 and HD method. Ym is a dataset with 10\\% missing values.")
+
+
+w <- latex(tab.enhancement.time, label="tab:sim1-enhancement-time",
+           ctable=TRUE, cdec=c(1,1,1,1,3),
+           file="results/sim1-enhancement-time.tex", rowlabel="",
+           caption="Computational cost (in seconds) of GEDE and several competing data enhancement methods. Dataset used in this analysis is Y, with no missing values nor outliers, so that competing methods (LASSO, XGBoost, and RandomForest) are applicable. Two methods are used to select the optimal L1 penalty in LASSO, one based on 5-fold CV, and the other one based on GCV. For competing enhancement methods, parallel computing is used to reduce computational cost. GEDE is applied with vprop=0.8 and HD method. Ym is a dataset with 10\\% missing values.")
+
+
+
+### L100, r4_hypo_test
+######################################################################
+## Results about hypothesis testing
+######################################################################
+
+## Impact of K
+pdf("results/sim-HT-Ks.pdf", width=10.5, height=7)
+nss <- list(ns, ns2); nn <- list(paste0("n", ns), paste0("n", ns2))
+Ks <- 1:ncol(lst.HTK.mean[[1]])
+par(mfcol=c(2,3))
+for (si in c("FPR", "TPR", "AUC")) {
+  ss <- list(sapply(lst.HTK.mean, function(o) o[si,])[,nn[[1]]],
+             sapply(lst2.HTK.mean, function(o) o[si,])[,nn[[2]]])
+  ylim <- range(ss)
+  if (si=="FPR") ylim[1] <- 0
+  for (di in c(1,2)) {
+    matplot(Ks, ss[[di]], type="l", lty=1, xlab="K", ylab="",
+            ylim=ylim, main=paste0(si, " (sim", di, ")"))
+    legend("bottomleft", lty=1, col=1:length(nn[[di]]),
+           legend=paste0("n=", nss[[di]]))
+    if (si=="FPR") abline(h=5, lty=3)
+  }
+}
+dev.off()
+
+## Compare with LASSO
+## ns <- sapply(names(lst.HT.mean), function(s) as.integer(substr(s, 2, nchar(s))))
+ndata <- colnames(lst.HT.mean[[1]])
+
+
+pdf("results/sim1-HT.pdf", width=10.5, height=3.5)
+par(mfrow=c(1,3))
+pchs <- 1:length(ndata); cols <- 1:length(ndata)
+for (si in c("FPR", "TPR", "AUC")) {
+  yi <- t(sapply(lst.HT.mean, function(x) x[si,]))
+  ylim <- range(yi)
+  if (si=="FPR") ylim[1] <- 0
+  matplot(x=ns3, y=yi, type="b", lty=1, ylim=ylim,
+          pch=pchs, col=cols, xlab="n", ylab="", main=si)
+  legend("bottomright", legend=ndata, lty=1, pch=pchs, col=cols)
+  if (si=="FPR") abline(h=5, lty=3)
+}
+dev.off()
+
+
+## summary table for selected ns
+NS <- c("n50", "n65", "n80")
+tab.HT.mean <- t(Reduce("rbind", lst.HT.mean[NS]))[c("Orig", "GEDE.K1", "LASSO.GCV"),]
+w <- latex(tab.HT.mean, label="tab:sim1-HT", ctable=TRUE,
+           cdec=rep(2,9),
+           file="results/sim1-HT.tex", rowlabel="",
+           cgroup=c(NS), n.cgroup=rep(3,length(NS)),
+           caption=paste0("Performance of DGEA based on the Original, GEDE enhanced, and LASSO enhanced data. Reported results are sample means of the percentages of TPR, FPR, and AUC taken over ", nreps, " randomly generated resampling data with the corresponding sample size. "))
+
+######################################################################
+## A plot to show that for more complex cases, using a larger K leads
+## to better performance in H-T
+######################################################################
+## make a plot of mean AUCs
+pdf("results/sim3-HT.pdf", width=9, height=6)
+par(mfrow=c(2,3))
+for (test in c("F", "t")) {
+  for (s in c("TPR", "FPR", "AUC")) {
+    nn <- paste0(s, ".", test); nn2 <- paste0(s, " (", test, "-test)")
+    ss <- RR3.HTK.mean[nn,]
+    if (s == "FPR") {
+      yl <- c(0, max(ss))
+    } else {
+      yl <- range(ss)
+    }
+    plot(Ks3, ss[-1], type="l", ylim=yl, xlab="K", ylab=s, main=nn2)
+    abline(h=ss[1], lty=2)
+  }
+}
+dev.off()
 ```
 
 

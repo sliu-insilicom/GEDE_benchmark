@@ -1,0 +1,16 @@
+\begin{table}[!tbp]
+\caption{Accuracy of covariance estimation. Sample covariance are computed by using \texttt{cov()} function with option \texttt{use=pairwise.complete.obs}. RMSE: root mean squared error between the estimated covariance and the oracle values. Cor: Pearson correlation between the estimated covariance and the oracle values. Datasets being used are $Y$ (the original simulated data), $Y^{m}$ (simulated data with 10\% missing values), and $Y^{mo}$ (simulated data with 10\% missing values and 10\% artificial outliers). For rows Y, Ym, and Ymo, the estimates are pooled covariance matrix estimated from the two groups; for Y.1gp, the covariance estimators are directly applied to $Y$ without using the grouping information.\label{tab:sim1-est}} 
+\begin{center}
+\begin{tabular}{lrrcrr}
+\hline\hline
+\multicolumn{1}{l}{\bfseries Dataset}&\multicolumn{2}{c}{\bfseries \texttt{cov()}}&\multicolumn{1}{c}{\bfseries }&\multicolumn{2}{c}{\bfseries \texttt{RobEst()}}\tabularnewline
+\cline{2-3} \cline{5-6}
+\multicolumn{1}{l}{}&\multicolumn{1}{c}{RMSE}&\multicolumn{1}{c}{Cor}&\multicolumn{1}{c}{}&\multicolumn{1}{c}{RMSE}&\multicolumn{1}{c}{Cor}\tabularnewline
+\hline
+Y.1gp&$0.061$&$0.958$&&$0.022$&$0.943$\tabularnewline
+Y&$0.058$&$0.979$&&$0.020$&$0.976$\tabularnewline
+Ym&$0.058$&$0.975$&&$0.022$&$0.969$\tabularnewline
+Ymo&$0.606$&$0.260$&&$0.024$&$0.973$\tabularnewline
+\hline
+\end{tabular}\end{center}
+\end{table}
