@@ -524,7 +524,7 @@ sim2 <- PPCA.datagen(n, oracle2, Grp2, miss.prop=0.1, out.prop=0.1)
 ## with true K=10 and 6 regressors
 ######################################################################
 # SL note: simulates gene expression data influenced by 6 predictors with predefined associations (
-genes per predictor).
+# genes per predictor).
 # Noise, missing values, and outliers are added for realism.
 # It allows testing multiple regression models, particularly under known predictor-gene relationships.
 
