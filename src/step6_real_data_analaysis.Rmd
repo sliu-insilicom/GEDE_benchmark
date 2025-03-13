@@ -1,0 +1,174 @@
+---
+title: "step6_real_analysis"
+output: html_document
+date: "2025-03-07"
+---
+
+### Note: make this a pipeline for both protein and RNA data, except the 1st data prep step
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(AnVIL)
+library(ggplot2)
+library(dplyr)
+library(readr)
+library("recount3")
+library("limma")
+library("SummarizedExperiment")  # assays function come from here
+source("GEDE_data_prep.R")
+source("GEDE_simulation.R")
+source("GEDE_real_analysis.R")
+library(pheatmap)
+library(DESeq2)
+library(Matrix)
+library(GEDE)
+library(edgeR)
+library(xgboost)
+library(randomForest)
+library(Hmisc)
+library(VennDiagram)
+library(eulerr)
+
+# change output dir
+out_dir = "/home/sliu/github/GEDE_benchmark/output/real_data_analysis"
+knitr::opts_knit$set(root.dir = out_dir)
+
+```
+
+
+### prepare protein data by project id
+
+
+```{r 1_1.prep_RNA_data, eval = FALSE, message = FALSE}
+# use recount3 and recover raw counts
+
+# download data from recount3
+all_projects <- available_projects()
+selected_proj = subset(all_projects, organism=="human" & project_home == "data_sources/tcga")
+selected_proj <- selected_proj[selected_proj$n_samples>500, ]
+selected_vars = c("tcga.gdc_cases.demographic.race", "tcga.gdc_cases.demographic.gender", "tcga.gdc_cases.diagnoses.tumor_stage", "tcga.gdc_cases.exposures.cigarettes_per_day")
+
+### still use the BRCA data, this
+Data_BRCA = pull_recount3_data(available_project = selected_proj, keyword="BRCA", group_vector = selected_vars)
+group = Data_BRCA$group
+counts = Data_BRCA$counts
+
+# downsample race: white 900 -> 300, and only keep 200 black
+table(Data_BRCA$group$tcga.gdc_cases.demographic.race)
+# use %in% instead of == to get rid of NA when facing NA == sth (returns NA)
+black_samples = row.names(group[group$tcga.gdc_cases.demographic.race %in% c("black or african american"), ])
+white_samples = row.names(group[group$tcga.gdc_cases.demographic.race %in% c("white"), ])
+# subsample white to 300
+set.seed(1234)
+white_samples <- sample(white_samples, 300)
+final_samples <- c(white_samples, black_samples)
+# new data
+downsampled_counts <- counts[, final_samples]
+downsampled_group <- group[final_samples, ]
+dim(downsampled_counts)
+dim(downsampled_group)
+
+Data_BRCA$group <- downsampled_group
+Data_BRCA$counts <- downsampled_counts
+rm(counts, group, downsampled_group, downsampled_counts)
+table(Data_BRCA$group$tcga.gdc_cases.demographic.race)
+
+# make sure samples are in the same order in count and metadata table
+sum(colnames(Data_BRCA$counts) == rownames(Data_BRCA$group)) == dim(Data_BRCA$group)[1]
+
+# save data for future usage
+save(Data_BRCA, file="input_Recount3_BRCA_race.Rdata")
+```
+
+
+### load variables here
+```{r load_variable, message=FALSE}
+# considering that we may switch data, put all variables here for global management
+
+# the variable names might be different, here is Data_BRCA
+# load("input_Recount3_BRCA_race.Rdata")
+input_data <- Data_BRCA
+deg_condition = "tcga.gdc_cases.demographic.race"
+cutoff_pvalue = 0.05
+cutoff_log2fc = 0.5
+
+# if there are too many DEG, we continue filter degs by a new cutoff
+new_log2fc = 1
+
+
+```
+
+
+
+### call DESeq2, edgeR, and limma to run DEG
+### Keep intersection (as GT) + union (to check extra genes identified by GEDE)
+```{r 2.1_call_DEG_for_ground_truth_on_full_data, message=FALSE}
+############ Get DEGs for the full data
+# DESeq2
+deg_deseq2 <- run_DESeq2_for_df_and_meta(df_count=input_data$counts, df_meta=input_data$group, single_condition=deg_condition, pvalue=cutoff_pvalue, log2fc=cutoff_log2fc)
+print(dim(deg_deseq2))
+
+# limma needs a voom transformed data
+deg_limma <- run_limma_for_df_and_meta(df_count=input_data$counts, df_meta=input_data$group, single_condition=deg_condition, pvalue=cutoff_pvalue, log2fc=cutoff_log2fc)
+print(dim(deg_limma))
+
+# edgeR
+deg_edger <- run_edgeR_for_df_and_meta(df_count=input_data$counts, df_meta=input_data$group, single_condition=deg_condition, pvalue=cutoff_pvalue, log2fc=cutoff_log2fc)
+print(dim(deg_edger))
+
+
+# while the number is too high, let's increase log2fc to 1~2 and then check the overlap and make a van di plot
+filtered_deseq2 <- filter_deg(deg_deseq2, log2fc=new_log2fc)
+print(dim(filtered_deseq2))
+filtered_limma <- filter_deg(deg_limma, log2fc = new_log2fc)
+print(dim(filtered_limma))
+filtered_edger <- filter_deg(deg_edger, log2fc = new_log2fc)
+print(dim(filtered_edger))
+
+# regular Venn
+compare_deg_non_proportional_figure(rownames(filtered_deseq2), rownames(filtered_limma), rownames(filtered_edger))
+
+# proportional Venn
+compare_deg_proportional_figure(rownames(filtered_deseq2), rownames(filtered_limma), rownames(filtered_edger))
+
+# based on RNA-seq data results, limm results is much smaller than the other 2, so I will use DESeq2+EdgeR overlap/union but ignore limma
+out6 = list()
+out6$filtered_deseq2 <- filtered_deseq2
+out6$filtered_edger <- filtered_edger
+out6$union_deg <- union(rownames(filtered_deseq2), rownames(filtered_edger))  # this is the finding before data correction
+out6$overlap_deg <- intersect(rownames(filtered_deseq2), rownames(filtered_edger)) # this serves as ground truth finding
+
+save(out6, file="output_real_data_analysis.Rdata")
+
+```
+
+
+### Now let's see how subsample affect DEG before GEDE by downsampling every 10%
+```{r 2.1_saturation_analysis_of_DEG_before_GEDE, message=FALSE}
+group_values = levels(as.factor(df_meta[[single_condition]]))
+# split group and do random sample
+sample_grp_1 = rownames(df_meta[df_meta[single_condition] == group_values[1], ])
+sample_grp_2 = rownames(df_meta[df_meta[single_condition] == group_values[2], ])
+
+# loop DEGs
+for (sample_rate in seq(0.1, 1, 0.1)) {
+  print(sample_rate)
+
+  # random sample 
+  set.seed(123)
+  select_1 = sample(sample_grp_1, size = round(length(sample_grp_1) * sample_rate))
+  select_2 = sample(sample_grp_2, size = round(length(sample_grp_2) * sample_rate))
+  
+  # filter df and metadata
+  
+}
+
+
+
+```
+
+
+
+
+
+

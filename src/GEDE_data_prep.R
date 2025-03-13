@@ -173,8 +173,8 @@ run_DESeq2 <- function(df_count, df_meta, single_condition, pvalue=0.05, log2fc=
     colData = df_meta,
     design = as.formula(paste0("~ ", single_condition))  # Specify the group variable
   )
-  # filter low counts
-  dds <- dds[rowSums(counts(dds)) > 1000, ]  # Keep genes with a total count >1000, as we have hundreds of samples
+  # filter low counts (don't use for now because we didn't include it in edgeR or limma)
+  # dds <- dds[rowSums(counts(dds)) > 1000, ]  # Keep genes with a total count >1000, as we have hundreds of samples
   # run DEG
   dds <- DESeq(dds)
   compare_conditions <- levels(as.factor(df_meta[[single_condition]]))
@@ -199,9 +199,8 @@ run_DESeq2 <- function(df_count, df_meta, single_condition, pvalue=0.05, log2fc=
 }
 
 
-
 # run limma for a voom transformed matrix, metadata vector (binary)
-run_limma <- function(df_transformed, meta_vector, pvalue=0.05, log2fc=0.5, betahat = 1) {
+run_limma <- function(df_transformed, meta_vector, pvalue=0.05, log2fc=0.5, betahat = 0.5) {
   meta_vector <- factor(meta_vector)
   design <- model.matrix(~ meta_vector)
   fit <- lmFit(df_transformed, design)
