@@ -1,15 +1,14 @@
 ---
 title: "step6_real_analysis"
 output: html_document
-date: "2025-03-07"
+date: "2025-03-14"
 ---
-
-### Note: make this a pipeline for both protein and RNA data, except the 1st data prep step
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(AnVIL)
 library(ggplot2)
+library(reshape2)
 library(dplyr)
 library(readr)
 library("recount3")
@@ -28,6 +27,14 @@ library(randomForest)
 library(Hmisc)
 library(VennDiagram)
 library(eulerr)
+library(patchwork)
+library(biomaRt)
+
+# for pathway enrichment
+# library(clusterProfiler)
+# library(org.Hs.eg.db)  # For human genes (change for other species)
+# library(enrichplot)  # For visualization
+# library(ReactomePA)  # Reactome pathway enrichment
 
 # change output dir
 out_dir = "/home/sliu/github/GEDE_benchmark/output/real_data_analysis"
@@ -36,10 +43,9 @@ knitr::opts_knit$set(root.dir = out_dir)
 ```
 
 
-### prepare protein data by project id
-
-
-```{r 1_1.prep_RNA_data, eval = FALSE, message = FALSE}
+# Data prep
+### 1.1a, Prep RNA data
+```{r 1.1a.prep_RNA_data, eval = FALSE, message = FALSE}
 # use recount3 and recover raw counts
 
 # download data from recount3
@@ -80,49 +86,46 @@ sum(colnames(Data_BRCA$counts) == rownames(Data_BRCA$group)) == dim(Data_BRCA$gr
 save(Data_BRCA, file="input_Recount3_BRCA_race.Rdata")
 ```
 
+### 1.1b, Prep Protein data
 
-### load variables here
+
+# Analysis before GEDE
+### 2.0, load variables here for analysis
 ```{r load_variable, message=FALSE}
 # considering that we may switch data, put all variables here for global management
 
 # the variable names might be different, here is Data_BRCA
-# load("input_Recount3_BRCA_race.Rdata")
+load("input_Recount3_BRCA_race.Rdata")
 input_data <- Data_BRCA
 deg_condition = "tcga.gdc_cases.demographic.race"
 cutoff_pvalue = 0.05
-cutoff_log2fc = 0.5
-
-# if there are too many DEG, we continue filter degs by a new cutoff
-new_log2fc = 1
+cutoff_log2fc = 1
 
 
 ```
 
 
-
-### call DESeq2, edgeR, and limma to run DEG
-### Keep intersection (as GT) + union (to check extra genes identified by GEDE)
+### 2.1, run DEG
+########## call DESeq2, edgeR, and limma to run DEG, Keep intersection (as GT) + union (to check extra genes identified by GEDE)
 ```{r 2.1_call_DEG_for_ground_truth_on_full_data, message=FALSE}
 ############ Get DEGs for the full data
 # DESeq2
-deg_deseq2 <- run_DESeq2_for_df_and_meta(df_count=input_data$counts, df_meta=input_data$group, single_condition=deg_condition, pvalue=cutoff_pvalue, log2fc=cutoff_log2fc)
-print(dim(deg_deseq2))
+deg_deseq2 <- run_DESeq2_for_df_and_meta(df_count=input_data$counts, df_meta=input_data$group, single_condition=deg_condition)
 
 # limma needs a voom transformed data
-deg_limma <- run_limma_for_df_and_meta(df_count=input_data$counts, df_meta=input_data$group, single_condition=deg_condition, pvalue=cutoff_pvalue, log2fc=cutoff_log2fc)
-print(dim(deg_limma))
+deg_limma <- run_limma_for_df_and_meta(df_count=input_data$counts, df_meta=input_data$group, single_condition=deg_condition)
 
 # edgeR
-deg_edger <- run_edgeR_for_df_and_meta(df_count=input_data$counts, df_meta=input_data$group, single_condition=deg_condition, pvalue=cutoff_pvalue, log2fc=cutoff_log2fc)
-print(dim(deg_edger))
+deg_edger <- run_edgeR_for_df_and_meta(df_count=input_data$counts, df_meta=input_data$group, single_condition=deg_condition)
+
 
 
 # while the number is too high, let's increase log2fc to 1~2 and then check the overlap and make a van di plot
-filtered_deseq2 <- filter_deg(deg_deseq2, log2fc=new_log2fc)
+filtered_deseq2 <- filter_deg(deg_deseq2, log2fc=cutoff_log2fc)
 print(dim(filtered_deseq2))
-filtered_limma <- filter_deg(deg_limma, log2fc = new_log2fc)
+filtered_limma <- filter_deg(deg_limma, log2fc = cutoff_log2fc)
 print(dim(filtered_limma))
-filtered_edger <- filter_deg(deg_edger, log2fc = new_log2fc)
+filtered_edger <- filter_deg(deg_edger, log2fc = cutoff_log2fc)
 print(dim(filtered_edger))
 
 # regular Venn
@@ -133,8 +136,15 @@ compare_deg_proportional_figure(rownames(filtered_deseq2), rownames(filtered_lim
 
 # based on RNA-seq data results, limm results is much smaller than the other 2, so I will use DESeq2+EdgeR overlap/union but ignore limma
 out6 = list()
-out6$filtered_deseq2 <- filtered_deseq2
-out6$filtered_edger <- filtered_edger
+out6$deg_all_records_deseq2 <- deg_deseq2
+out6$deg_all_records_limma <- deg_limma
+out6$deg_all_records_edger <- deg_edger
+
+out6$deg_sig_deseq2 <- filtered_deseq2
+out6$deg_sig_limma <- filtered_limma
+out6$deg_sig_edger <- filtered_edger
+
+
 out6$union_deg <- union(rownames(filtered_deseq2), rownames(filtered_edger))  # this is the finding before data correction
 out6$overlap_deg <- intersect(rownames(filtered_deseq2), rownames(filtered_edger)) # this serves as ground truth finding
 
@@ -143,30 +153,462 @@ save(out6, file="output_real_data_analysis.Rdata")
 ```
 
 
-### Now let's see how subsample affect DEG before GEDE by downsampling every 10%
-```{r 2.1_saturation_analysis_of_DEG_before_GEDE, message=FALSE}
-group_values = levels(as.factor(df_meta[[single_condition]]))
+### 2.2, subsample saturation for DEG before GEDE
+########## Downsample every 10%
+```{r 2.2_saturation_analysis_of_DEG_before_GEDE, message=FALSE}
+df_meta <- input_data$group
+group_values = levels(as.factor(df_meta[[deg_condition]]))
 # split group and do random sample
-sample_grp_1 = rownames(df_meta[df_meta[single_condition] == group_values[1], ])
-sample_grp_2 = rownames(df_meta[df_meta[single_condition] == group_values[2], ])
+sample_grp_1 = rownames(df_meta[df_meta[deg_condition] == group_values[1], ])
+sample_grp_2 = rownames(df_meta[df_meta[deg_condition] == group_values[2], ])
 
-# loop DEGs
-for (sample_rate in seq(0.1, 1, 0.1)) {
-  print(sample_rate)
+# loop DEGs by different sample rate, note that for the 200 vs 300 RNA-seq case, 20% can recover 87.5% DEGs
+# Note: here we count DEG recovery rate: those found in full data, NOT all DEGs here
+sample_raio = seq(0.1, 0.9, 0.1)
 
+# init saturation results 
+saturation_union_recover_rate = c()
+saturation_intersect_recover_rate = c()
+
+for (raio in sample_raio) {
+  print(raio)
   # random sample 
   set.seed(123)
-  select_1 = sample(sample_grp_1, size = round(length(sample_grp_1) * sample_rate))
-  select_2 = sample(sample_grp_2, size = round(length(sample_grp_2) * sample_rate))
+  select_1 = sample(sample_grp_1, size = round(raio * length(sample_grp_1)))
+  select_2 = sample(sample_grp_2, size = round(raio * length(sample_grp_2)))
+  keep_data = c(select_1, select_2)
   
   # filter df and metadata
+  temp_df_count = input_data$counts[ , keep_data]
+  temp_df_meta = input_data$group[keep_data, ]
   
+  # call DEG, note we use "new_log2fc=1" here because we scale up the DEGs form full data
+
+  temp_deg_deseq2 <- run_DESeq2_for_df_and_meta(df_count=temp_df_count, df_meta=temp_df_meta, single_condition=deg_condition)
+  temp_deg_deseq2 <- filter_deg(temp_deg_deseq2, log2fc=cutoff_log2fc)
+  
+  temp_deg_edger <- run_edgeR_for_df_and_meta(df_count=temp_df_count, df_meta=temp_df_meta, single_condition=deg_condition)
+  temp_deg_edger <- filter_deg(temp_deg_edger, log2fc=cutoff_log2fc)
+  
+  # create a new list to store results and nest it into out6
+  temp_list = list()
+  temp_list$deg_deseq2 = temp_deg_deseq2
+  temp_list$deg_edger = temp_deg_edger
+  temp_list$union_deg = union(rownames(temp_deg_deseq2), rownames(temp_deg_edger))
+  temp_list$intersect_deg = intersect(rownames(temp_deg_deseq2), rownames(temp_deg_edger))
+  temp_list$gt_recover_by_union = intersect(temp_list$union_deg, out6$overlap_deg)
+  temp_list$gt_recover_by_union_ratio = length(temp_list$gt_recover_by_union) / length(out6$overlap_deg)
+  temp_list$gt_recover_by_intersect = intersect(temp_list$intersect_deg, out6$overlap_deg)
+  temp_list$gt_recover_by_intersect_ratio = length(temp_list$gt_recover_by_intersect) / length(out6$overlap_deg)
+  
+  # add plot stats
+  saturation_union_recover_rate = c(saturation_union_recover_rate, temp_list$gt_recover_by_union_ratio)
+  saturation_intersect_recover_rate = c(saturation_intersect_recover_rate, temp_list$gt_recover_by_intersect_ratio)
+  
+  # add this list to out6
+  out6[[paste0("subsample_result_before_GEDE_ratio_", raio)]] <- temp_list
+  rm(temp_list)
 }
 
+# save and plot results
+saturation_results = list()
+saturation_results$ratio = sample_raio
+saturation_results$union_recover = saturation_union_recover_rate
+saturation_results$intersect_recover = saturation_intersect_recover_rate
+
+out6$saturation_before_GEDE = saturation_results
+rm(saturation_results)
+
+# save results
+save(out6, file="output_real_data_analysis.Rdata")
+
+
+# generate line plots
+df <- data.frame(
+  ratio = out6$saturation_before_GEDE$ratio,
+  union_recover = out6$saturation_before_GEDE$union_recover,
+  intersect_recover = out6$saturation_before_GEDE$intersect_recover
+)
+
+df_long <- melt(df, id.vars = "ratio", variable.name = "Type", value.name = "Recovery")
+
+# Create line plot
+ggplot(df_long, aes(x = ratio, y = Recovery, color = Type, group = Type)) +
+  geom_line(size = 1) +  # Draw lines
+  geom_point(size = 2) + # Add points for better visibility
+  geom_text(aes(label = round(Recovery, 3)), vjust = -0.5, size = 4) + # Add text labels
+  labs(title = "Saturation Analysis", x = "Subsample ratio", y = "Recovery ratio") +
+  scale_color_manual(values = c("red", "blue")) +  # Customize colors
+  theme_minimal()
 
 
 ```
 
+
+
+
+# Analysis after GEDE
+### 3.0 apply GEDE on log transformed data
+```{r 3.0_apply_GEDE_polish, eval = FALSE, message=FALSE}
+load("input_Recount3_BRCA_race.Rdata")
+input_data <- Data_BRCA
+
+condition_variable = "tcga.gdc_cases.demographic.race"
+
+# prep data for GEDE
+df_count = input_data$counts
+df_meta = input_data$group
+temp_metadata <- df_meta[colnames(df_count), , drop = TRUE]  # Reorder to match count data
+# this is group vector
+temp_group <- factor(temp_metadata[[deg_condition]])
+levels(temp_group) <- gsub(" ", "_", levels(temp_group))  # replace space by _ for the limma contrast
+# numeric for GEDE input
+numeric_group <- as.numeric(temp_group) - 1
+
+
+# GEDE needs transposed input: gene * sample
+transpose_df_count <- transpose(df_count)
+# Restore row and column names
+rownames(transpose_df_count) <- colnames(df_count)  # Old column names → new row names
+colnames(transpose_df_count) <- rownames(df_count)  # Old row names → new column names
+
+
+# log2 transformation: GEDE need log data because it assumes multi-normal dist
+log_df = log2(transpose_df_count+1)
+normality_results <- apply(log_df, 2, function(x) {
+  if (length(unique(x)) > 1) {  # Ensure column is not constant
+    return(shapiro.test(x)$p.value)
+  } 
+})
+normality_results <- unlist(normality_results)
+
+# make some qq plots for columns: pick from normality test results
+selected_columns <- c("ENSG00000162777.16", "ENSG00000143106.12", "ENSG00000031698.12")
+column_name <- "ENSG00000162777.16"
+
+# Create QQ plot using ggplot2
+ggplot(log_df, aes(sample = .data[[column_name]])) +
+  stat_qq() + 
+  stat_qq_line() +
+  labs(title = paste("QQ Plot for", column_name), x = "Theoretical Quantiles", y = "Sample Quantiles") +
+  theme_minimal()
+
+
+
+# run gede based on log df and then transfer it back
+gede_output <- GEDE(log_df, X=numeric_group, K.method="vprop", HD=TRUE)
+
+# check output (transpose back)
+new_df = transpose(gede_output$Ystar)
+rownames(new_df) <- colnames(gede_output$Ystar)  # Old column names → new row names
+colnames(new_df) <- rownames(gede_output$Ystar)  # Old row names → new column names
+
+# transfer back to count by 2**x
+new_count_df = round(2^new_df)
+
+
+# change of depth (colsums)
+old_depth = colsums(df_count)
+new_depth = colsums(new_count_df)
+new_ratio = new_depth / old_depth
+hist(new_ratio, 
+     breaks = 100,  # Number of bins
+     col = "blue",  # Color of bars
+     border = "black",  # Edge color
+     main = "Histogram of depth ratios", 
+     xlab = "Ratio", 
+     xlim = c(0,2),
+     ylab = "Frequency")
+
+# folder changes before/after GEDE
+old_means <- sapply(unique(numeric_group), function(g) {
+  rowMeans(df_count[, numeric_group == g, drop = FALSE])  # Compute mean for each row within the group
+})
+old_fc <- old_means[,1]  / (old_means[,2]+1)
+
+new_means <- sapply(unique(numeric_group), function(g) {
+  rowMeans(new_count_df[, numeric_group == g, drop = FALSE]) 
+})
+new_fc <- new_means[,1] / (new_means[,2]+1)
+
+
+# plot differences
+plot_old_fc = old_fc
+plot_new_fc = new_fc
+# make plot
+plot_old_fc[plot_old_fc > 10] <- 10
+plot_old_fc[plot_old_fc < -10] <- -10
+plot_new_fc[plot_new_fc > 10] <- 10
+plot_new_fc[plot_new_fc < -10] <- -10
+# Combine into a dataframe for boxplot
+df <- data.frame(
+  FoldChange = c(plot_old_fc, plot_new_fc),
+  Group = rep(c("Old FC", "New FC"), each = length(plot_old_fc))
+)
+medians <- tapply(df$FoldChange, df$Group, median)
+# Create boxplot
+boxplot(FoldChange ~ Group, data = df, 
+        main = "Comparison of Old and New Fold Change (Clipped at ±10)", 
+        ylab = "Fold Change",
+        col = c("lightblue", "lightgreen"),  # Box colors
+        border = "black",                    # Outline color
+        notch = TRUE)                         # Notched boxplot for median confidence
+
+
+# save results
+input_data$gede_counts <- new_count_df
+Data_BRCA <- input_data
+all(sum(rownames(Data_BRCA$group)  == colnames(Data_BRCA$gede_counts)))
+save(Data_BRCA, file="input_Recount3_BRCA_race.Rdata")
+
+```
+
+
+
+### 3.1, full data DEG after GEDE
+```{r 3.1_call_DEG_on_full_data_after_GEDE, message=FALSE}
+# need to reload data as we added new things
+load("input_Recount3_BRCA_race.Rdata")
+input_data <- Data_BRCA
+# load previous results
+load("output_real_data_analysis.Rdata")
+
+
+
+############ Get DEGs for the full data
+# DESeq2
+deg_deseq2 <- run_DESeq2_for_df_and_meta(df_count=input_data$gede_counts, df_meta=input_data$group, single_condition=deg_condition, pvalue=cutoff_pvalue, log2fc=cutoff_log2fc)
+
+# limma needs a voom transformed data
+deg_limma <- run_limma_for_df_and_meta(df_count=input_data$gede_counts, df_meta=input_data$group, single_condition=deg_condition, pvalue=cutoff_pvalue, log2fc=cutoff_log2fc)
+
+# edgeR
+deg_edger <- run_edgeR_for_df_and_meta(df_count=input_data$gede_counts, df_meta=input_data$group, single_condition=deg_condition, pvalue=cutoff_pvalue, log2fc=cutoff_log2fc)
+
+
+
+# while the number is too high, let's increase log2fc to 1~2 and then check the overlap and make a van di plot
+filtered_deseq2 <- filter_deg(deg_deseq2, log2fc= cutoff_log2fc)
+print(dim(filtered_deseq2))
+filtered_limma <- filter_deg(deg_limma, log2fc = cutoff_log2fc)
+print(dim(filtered_limma))
+filtered_edger <- filter_deg(deg_edger, log2fc = cutoff_log2fc)
+print(dim(filtered_edger))
+
+# regular Venn
+compare_deg_non_proportional_figure(rownames(filtered_deseq2), rownames(filtered_limma), rownames(filtered_edger))
+
+# proportional Venn
+compare_deg_proportional_figure(rownames(filtered_deseq2), rownames(filtered_limma), rownames(filtered_edger))
+
+# add to results
+out6$deg_gede_records_deseq2 <- deg_deseq2
+out6$deg_gede_records_limma <- deg_limma
+out6$deg_gede_records_edger <- deg_edger
+out6$deg_sig_gede_deseq2 <- filtered_deseq2
+out6$deg_sig_gede_limma <- filtered_limma
+out6$deg_sig_gede_edger <- filtered_edger
+
+out6$union_gede_deg <- union(rownames(filtered_deseq2), rownames(filtered_edger))   # no limma here for consistency
+out6$overlap_gede_deg <- intersect(rownames(filtered_deseq2), rownames(filtered_edger)) 
+
+# gede DEG recover and overlap 
+out6$gede_union_recover_ratio = length(intersect(out6$union_gede_deg, out6$overlap_deg)) / length(out6$overlap_deg)
+out6$gede_overlap_recover_ratio = length(intersect(out6$overlap_gede_deg, out6$overlap_deg)) / length(out6$overlap_deg)
+out6$gede_extra_genes = setdiff(out6$overlap_gede_deg, out6$overlap_deg)
+
+save(out6, file="output_real_data_analysis.Rdata")
+
+```
+
+
+
+### 3.2, saturation analysis after GEDE
+```{r 3.2_saturation_analysis_after_GEDE, message=FALSE}
+group_values = levels(as.factor(df_meta[[deg_condition]]))
+# split group and do random sample
+sample_grp_1 = rownames(df_meta[df_meta[deg_condition] == group_values[1], ])
+sample_grp_2 = rownames(df_meta[df_meta[deg_condition] == group_values[2], ])
+
+# loop DEGs by different sample rate, note that for the 200 vs 300 RNA-seq case, 20% can recover 87.5% DEGs
+# Note: here we count DEG recovery rate: those found in full data, NOT all DEGs here
+sample_raio = seq(0.1, 0.9, 0.1)
+
+# init saturation results 
+saturation_union_recover_rate = c()
+saturation_intersect_recover_rate = c()
+
+for (ratio in sample_raio) {
+  print(ratio)
+  # random sample 
+  set.seed(123)
+  select_1 = sample(sample_grp_1, size = round(ratio * length(sample_grp_1)))
+  select_2 = sample(sample_grp_2, size = round(ratio * length(sample_grp_2)))
+  keep_data = c(select_1, select_2)
+  
+  # filter df and metadata (here is the data after GEDE)
+  temp_df_count = input_data$gede_counts[ , keep_data]
+  temp_df_meta = input_data$group[keep_data, ]
+  
+  # call DEG, note we use "new_log2fc=1" here because we scale up the DEGs form full data
+
+  temp_deg_deseq2 <- run_DESeq2_for_df_and_meta(df_count=temp_df_count, df_meta=temp_df_meta, single_condition=deg_condition, pvalue=cutoff_pvalue, log2fc= new_log2fc)
+  temp_deg_deseq2 <- filter_deg(temp_deg_deseq2, log2fc= cutoff_log2fc)
+  
+  temp_deg_edger <- run_edgeR_for_df_and_meta(df_count=temp_df_count, df_meta=temp_df_meta, single_condition=deg_condition, pvalue=cutoff_pvalue, log2fc= new_log2fc)
+  temp_deg_edger <- filter_deg(temp_deg_edger, log2fc= cutoff_log2fc)
+  
+  # create a new list to store results and nest it into out6
+  temp_list = list()
+  temp_list$deg_deseq2 = temp_deg_deseq2
+  temp_list$deg_edger = temp_deg_edger
+  temp_list$union_deg = union(rownames(temp_deg_deseq2), rownames(temp_deg_edger))
+  temp_list$intersect_deg = intersect(rownames(temp_deg_deseq2), rownames(temp_deg_edger))
+  temp_list$gt_recover_by_union = intersect(temp_list$union_deg, out6$overlap_deg)
+  temp_list$gt_recover_by_union_ratio = length(temp_list$gt_recover_by_union) / length(out6$overlap_deg)
+  temp_list$gt_recover_by_intersect = intersect(temp_list$intersect_deg, out6$overlap_deg)
+  temp_list$gt_recover_by_intersect_ratio = length(temp_list$gt_recover_by_intersect) / length(out6$overlap_deg)
+  
+  # add plot stats
+  saturation_union_recover_rate = c(saturation_union_recover_rate, temp_list$gt_recover_by_union_ratio)
+  saturation_intersect_recover_rate = c(saturation_intersect_recover_rate, temp_list$gt_recover_by_intersect_ratio)
+  
+  # add this list to out6
+  out6[[paste0("subsample_result_after_GEDE_ratio_", ratio)]] <- temp_list
+  rm(temp_list)
+}
+
+# save and plot results
+saturation_results = list()
+saturation_results$ratio = sample_raio
+saturation_results$union_recover = saturation_union_recover_rate
+saturation_results$intersect_recover = saturation_intersect_recover_rate
+
+out6$saturation_after_GEDE = saturation_results
+rm(saturation_results)
+
+
+
+# save results
+save(out6, file="output_real_data_analysis.Rdata")
+
+
+# generate line plots
+df <- data.frame(
+  ratio = out6$saturation_after_GEDE$ratio,
+  union_recover = out6$saturation_after_GEDE$union_recover,
+  intersect_recover = out6$saturation_after_GEDE$intersect_recover
+)
+
+df_long <- melt(df, id.vars = "ratio", variable.name = "Type", value.name = "Recovery")
+
+# Create line plot
+ggplot(df_long, aes(x = ratio, y = Recovery, color = Type, group = Type)) +
+  geom_line(size = 1) +  # Draw lines
+  geom_point(size = 2) + # Add points for better visibility
+  geom_text(aes(label = round(Recovery, 3)), vjust = -0.5, size = 4) + # Add text labels
+  labs(title = "Saturation Analysis", x = "Subsample ratio", y = "Recovery ratio") +
+  scale_color_manual(values = c("red", "blue")) +  # Customize colors
+  theme_minimal()
+
+
+
+
+# let's plot 2 saturations together
+df_sat_overlap <- data.frame(
+  ratio = out6$saturation_after_GEDE$ratio,
+  raw_data = out6$saturation_before_GEDE$intersect_recover,
+  gede_data = out6$saturation_after_GEDE$intersect_recover
+)
+df_long_overlap <- melt(df_sat_overlap, id.vars = "ratio", variable.name = "Type", value.name = "Recovery")
+
+
+df_sat_union <- data.frame(
+  ratio = out6$saturation_after_GEDE$ratio,
+  raw_data = out6$saturation_before_GEDE$union_recover,
+  gede_data = out6$saturation_after_GEDE$union_recover
+)
+df_long_union <- melt(df_sat_union, id.vars = "ratio", variable.name = "Type", value.name = "Recovery")
+
+# plot them together
+p1 <- ggplot(df_long_overlap, aes(x = ratio, y = Recovery, color = Type, group = Type)) +
+  geom_line(size = 1) +  # Draw lines
+  geom_point(size = 2) + # Add points for better visibility
+  geom_text(aes(label = round(Recovery, 3)), vjust = -0.5, size = 4) + # Add text labels
+  labs(title = "Saturation Analysis", x = "Subsample ratio", y = "Recovery ratio by OVERLAP DEGs") +
+  ylim(0, 1) +
+  scale_color_manual(values = c("red", "blue")) +  # Customize colors
+  theme_minimal()
+
+p2 <- ggplot(df_long_union, aes(x = ratio, y = Recovery, color = Type, group = Type)) +
+  geom_line(size = 1) +  # Draw lines
+  geom_point(size = 2) + # Add points for better visibility
+  geom_text(aes(label = round(Recovery, 3)), vjust = -0.5, size = 4) + # Add text labels
+  labs(title = "Saturation Analysis", x = "Subsample ratio", y = "Recovery ratio by UNION DEGs") +
+  ylim(0, 1) +
+  scale_color_manual(values = c("red", "blue")) +  # Customize colors
+  theme_minimal()
+
+p1 + p2
+
+# Save the figure as a file
+combined_plot <- p1 + p2
+ggsave(filename = "saturation_analysis.png", plot = combined_plot, width = 15, height = 6, dpi = 300)
+
+```
+
+
+
+# check differences
+### Why genes are not DEG in subsample
+```{r 4.1_check_non_DEGs, message=FALSE}
+extra_DEG_in_raw <- setdiff(out6$overlap_deg, out6$union_gede_deg)
+
+temp_record_deseq2 <- out6$deg_gede_records_deseq2[rownames(out6$deg_gede_records_deseq2) %in% extra_DEG_in_raw, ]
+
+# print results out
+sum(temp_record_deseq2$padj > 0.05)   # 67
+sum(abs(temp_record_deseq2$log2FoldChange) < 1) # 519
+temp_abs_log2fc <- abs(temp_record_deseq2$log2FoldChange)
+
+hist(temp_abs_log2fc, 
+     breaks = 10,  # Number of bins
+     col = "blue",  # Color of bars
+     border = "black",  # Edge color
+     main = "Histogram of abs log2fc", 
+     xlab = "Ratio", 
+     xlim = c(0,1),
+     ylab = "Frequency")
+
+```
+
+
+
+### Extra findings in GEDE: do they make sense
+```{r 4.2_extra_DEGs_from_GEDE, message=FALSE}
+# extra genes
+temp_extra = out6$gede_extra_genes
+
+# Remove version numbers (everything after the dot)
+temp_extra_clean <- sub("\\..*", "", temp_extra)
+
+# Query Ensembl to get gene names
+# those related with cancer: CEACAM6, MUC4, CYP19A1, GATA4
+gene_mapping <- getBM(
+  attributes = c("ensembl_gene_id", "external_gene_name"),
+  filters = "ensembl_gene_id",
+  values = temp_extra_clean,
+  mart = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+)
+
+# run pathway enrichment
+
+load("input_Recount3_BRCA_race.Rdata")
+input_data <- Data_BRCA
+```
+
+
+# End
 
 
 

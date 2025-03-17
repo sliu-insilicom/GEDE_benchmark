@@ -19,22 +19,15 @@ run_DESeq2_for_df_and_meta <- function(df_count, df_meta, single_condition, pval
   dds <- DESeq(dds)
   compare_conditions <- levels(as.factor(df_meta[[single_condition]]))
   res <- results(dds, contrast = c(single_condition, compare_conditions[1], compare_conditions[2]))
-  print(summary(res))
+  # return the full table for DEG checking
+  return(res)
+  
+  # print(summary(res))
   # Filter significant genes
-  significant_genes  <- res[!is.na(res$padj) & res$padj < pvalue & abs(res$log2FoldChange)>log2fc, ]
-  print(dim(significant_genes))
-  # make some plots
-  EnhancedVolcano(res,
-                  lab = rownames(res),                   # Gene labels
-                  x = 'log2FoldChange',                  # Fold change
-                  y = 'pvalue',                          # p-value
-                  title = 'Volcano Plot',
-                  pCutoff = pvalue,                        # P-value cutoff
-                  FCcutoff = log2fc                           # Fold change cutoff
-  )
-  plotMA(res, main = "MA Plot", ylim = c(-5, 5))
-  # return results
-  return(significant_genes)
+  # significant_genes  <- res[!is.na(res$padj) & res$padj < pvalue & abs(res$log2FoldChange)>log2fc, ]
+  # print(dim(significant_genes))
+  # 
+  # return(significant_genes)
 }
 
 
@@ -59,9 +52,11 @@ run_limma_for_df_and_meta <- function(df_count, df_meta, single_condition, pvalu
 
   # Extract differentially expressed genes (DEGs)
   res <- topTable(fit2, number=Inf, sort.by = "P")
-  significant_genes  <- res[!is.na(res$adj.P.Val) & res$adj.P.Val < pvalue & abs(res$logFC)>log2fc, ]
+  # return the full table for DEG checking
+  return(res)
+  # significant_genes  <- res[!is.na(res$adj.P.Val) & res$adj.P.Val < pvalue & abs(res$logFC)>log2fc, ]
   
-  return(significant_genes)
+  # return(significant_genes)
 }
 
 
@@ -88,11 +83,13 @@ run_edgeR_for_df_and_meta <- function(df_count, df_meta, single_condition, pvalu
   
   # Extract results table
   res <- topTags(lrt, n = Inf)$table  # Get all genes
+  # return the full table for DEG checking
+  return(res)
   
   # Filter significant DEGs (adjusted p-value < pvalue & absolute log2FC > log2fc)
-  significant_genes  <- res[!is.na(res$FDR) & res$FDR < pvalue & abs(res$logFC)>log2fc, ]
-
-  return(significant_genes)
+  # significant_genes  <- res[!is.na(res$FDR) & res$FDR < pvalue & abs(res$logFC)>log2fc, ]
+  # 
+  # return(significant_genes)
 }
 
 
