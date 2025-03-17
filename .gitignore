@@ -6,4 +6,4 @@
 *.rda
 *.tsv
 
-
+output/real_data_analysis/*
