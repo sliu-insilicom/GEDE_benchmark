@@ -304,7 +304,7 @@ rownames(new_df) <- colnames(gede_output$Ystar)  # Old column names → new row 
 colnames(new_df) <- rownames(gede_output$Ystar)  # Old row names → new column names
 
 # transfer back to count by 2**x
-new_count_df = round(2^new_df)
+new_count_df = round(pmax(2^new_df-1, 0))
 
 
 # change of depth (colsums)
