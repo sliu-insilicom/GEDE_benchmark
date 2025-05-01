@@ -14,7 +14,8 @@ run_DESeq2_for_df_and_meta <- function(df_count, df_meta, single_condition, pval
     design = as.formula(paste0("~ ", single_condition))  # Specify the group variable
   )
   # filter low counts, this is a subjective cutoff can determined arbitrarily
-  dds <- dds[rowSums(counts(dds)) > 1000, ]  # Keep genes with a total count >1000, as we have hundreds of samples
+  drop <- which(apply(cpm(dds), 1, max) < 1)
+  dds <- dds[-drop, ]
   # run DEG
   dds <- DESeq(dds)
   compare_conditions <- levels(as.factor(df_meta[[single_condition]]))

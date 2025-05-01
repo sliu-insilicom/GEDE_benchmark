@@ -1,5 +1,14 @@
-# The galaxy3 server is down, so I put a local R + VS code (doesn't fit Rstudio well)
+# The galaxy3 server is down, so I put a local R + VS code (doesn't fit Rstudio)
 # so use this R file for analysis - will merge code back to Rmd when server is back up
+
+# here are the changes we made:
+# 1. reduce sample size to 50 vs 50, current is too large
+# 2. use wisorized data (not much difference on overlaps)
+# 3. the DEG difference is expected, and we'll focus on the biological meaning of the differences
+# 4. visualize some genes for their differences before/after GEDE for both directions
+# 5. (under consideration, need more support) we adjust the log2fc cutoff for GEDE
+# 6. DEG by raw data: winsorize log raw -> back to count -> call DEG
+# 7. DEG by GEDE data: GEDE on direct log raw (no winsorization in Xing's code) -> back to count -> call DEG
 
 
 # Load the required libraries
@@ -23,6 +32,9 @@ library(VennDiagram)
 library(eulerr)
 library(patchwork)
 library(biomaRt)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
 
 # src functions
 setwd("/home/sliu/github/GEDE_benchmark/src")
@@ -75,7 +87,15 @@ Winsor <- function(Y, nMAD=3) {
 
 
 
-######## here is the new adjustment 1/2: we remove samples with low depth
+########### if start over, reload all codes above
+####################################################################################################################################
+
+
+
+
+
+
+######## here is the new adjustment 1/3: we remove samples with low depth
 # prep data for GEDE
 df_count0 = input_data$counts; m0 <- nrow(df_count0); n0 <- ncol(df_count0)
 df_meta = input_data$group
@@ -108,14 +128,42 @@ abline(v = o$L, lty = 2)
 dev.off()
 
 
-######## here is the new adjustment 2/2: we remove genes with more than half 0s
+######## here is the new adjustment 2/3: down sample to 50 vs 50
+# start with df_count1, which is the filtered data (depth)
+dim(df_count1)  # 22321   489
+
+# remove metadata as well
+df_meta1 <- df_meta[-samples.low, ]
+print(dim(df_meta1)) # 489  4
+
+# random sample by deg_condition
+temp_sample <- df_meta1
+temp_sample['rownames'] <- rownames(temp_sample)
+set.seed(123)
+sampled_rows <- temp_sample %>%
+  group_by(!!sym(deg_condition)) %>%
+  slice_sample(n = 50) %>%
+  ungroup()
+
+# here we replace raw data and metadata by smaller samples and save to a new R obj
+sample_df_count <- df_count1[, sampled_rows[["rownames"]]]
+sample_df_meta <- df_meta1[sampled_rows[["rownames"]], ]
+dim(sample_df_count) # 22321 100
+dim(sample_df_meta) # 100   4
+
+
+
+######## here is the new adjustment 3/3: we remove genes with more than half 0s
 ## Xing 04/12/2025. Filtering genes with excessive zeros
+df_count1 <- sample_df_count  # just for convenience, no later names latter
+
 n.zeros <- rowsums(df_count1==0)
-dim(df_count1)  # 22321
+n <- ncol(df_count1)
+dim(df_count1)  # 22321   100
 
 df_count <- df_count1[n.zeros <= n/2,]; m <- nrow(df_count)
-dim(df_count) # 17978
-# 4343 genes are removed
+dim(df_count) # 18017
+# 4343 genes are removed in full data, 4304 removed in sampled data
 
 # log2 transformation: GEDE need log data because it assumes multi-normal dist
 log_df = log2(df_count+1)
@@ -143,8 +191,25 @@ for (i in 1:length(idx)) {
 dev.off()
 
 
-## run GEDE on filtered data
-t1 <- system.time(gede_output <- GEDE(t(log_df), X=numeric_group1, K.method="vprop", HD=TRUE))
+
+# save output
+input_subsample_data = list(count = df_count, group = sample_df_meta, log_count = log_df)
+save(input_subsample_data, file="input_subsample_Recount3_BRCA_race.Rdata")
+
+
+
+# re-build numeric_group
+all(rownames(input_subsample_data$group) == colnames(input_subsample_data$count))
+temp_group <- factor(input_subsample_data$group[[deg_condition]])
+## limma does not like spaces
+levels(temp_group) <- c("black", "white")
+# numeric for GEDE input: white: 1; black: 0
+numeric_group <- as.numeric(temp_group) - 1
+
+
+## run GEDE on filtered data (this is Xing's part for visulization purpose)
+# note: the raw data DEG by Xing is based on winsorized data, so here we may need to do it as well, but for this figure we didn't
+gede_output <- GEDE(t(log_df), X=numeric_group, K.method="vprop", HD=TRUE)
 
 # GEDE improved expressions
 new_df = transpose(gede_output$Ystar)
@@ -154,7 +219,7 @@ rownames(new_df) <- rownames(log_df); colnames(new_df) <- colnames(new_df)
 ## liberal 2 MAD cutoff
 outliers2 <- as.data.frame(Hampel(t(log_df), nMAD=2, arr.ind=TRUE))
 colnames(outliers2) <- c("sample", "gene")
-## 6.3% of data are marked as potential outliers
+## 6.3% of data are marked as potential outliers, 6.6% for subsample data
 round(nrow(outliers2)/length(log_df)*100, 1)
 
 # transfer back to count by 2**x-1, floored at 0
@@ -179,8 +244,10 @@ dev.off()
 
 ### LFC-var-comparison
 # LFC (log-fold-changes) before/after GEDE, using log-data
-n0 <- sum(numeric_group1==0) #191 black subjects
-n1 <- sum(numeric_group1)    #298 white subjects
+
+numeric_group1 = numeric_group # after subsample, adjust data
+n0 <- sum(numeric_group1==0) 
+n1 <- sum(numeric_group1)   
 x <- ifelse(numeric_group1==0, -1/n0, 1/n1)
 LFC.orig <- drop(log_df%*%x); LFC.gede <- drop(new_df%*%x)
 
@@ -213,10 +280,18 @@ dev.off()
 ###################### Now we can come back to my own analysis
 # I didn't use Xing's ORACLE output in L244
 # df_count is df after gene removel
+
+################################################################################################################################################
+# if crash, load data to start here
+# load("input_subsample_Recount3_BRCA_race.Rdata")
+
+
 dim(df_count)
+input_data = input_subsample_data
 
 # prep data for GEDE
 df_meta = input_data$group
+
 temp_metadata <- df_meta[colnames(df_count), , drop = TRUE]  # Reorder to match count data
 # this is group vector
 temp_group <- factor(temp_metadata[[deg_condition]])
@@ -323,7 +398,7 @@ dim(df_meta)
 log_df = log2(df_count+1)
 dim(log_df)
 o <- Winsor(log_df, nMAD=3)
-## around 1.3% of data were winsorized
+## around 1.5% of data were winsorized
 (nrow(o$out.upper.ids)+nrow(o$out.lower.ids))/length(log_df)
 
 Yw <- o$Y #this is the set of winsorized log-expressions
@@ -340,11 +415,13 @@ input_data = new_input
 
 
 
+
+########################################################################################################################
 ### Can pick up here for future analysis
 # load("updated_input_Recount3_BRCA_race.Rdata")
 # input_data <- Data_BRCA
 
-
+# the counts is the winsorized data for raw data
 
 
 
@@ -411,6 +488,30 @@ compare_deg_non_proportional_figure <- function(v1, v2, v3,
 }
 
 
+# the proportional draw needs a ggplot2
+compare_deg_proportional_figure <- function(v1, v2, v3, names = c("DESeq2", "limma", "EdgeR"), pdf_file = "compare_deg_proportional.pdf") {
+  # Venn based on proportion
+  venn_data <- setNames(list(v1, v2, v3), names)
+  
+  fit <- euler(venn_data)
+  
+  # Create the plot
+  p <- plot(fit, 
+            fills = c("red", "blue", "green"), 
+            edges = TRUE, 
+            labels = TRUE,
+            quantities = TRUE,  # Show values
+            main = "Proportional Venn Diagram")
+  
+  # Save the plot to a PDF
+  ggsave(pdf_file, plot = p, width = 7, height = 7)
+  
+  return(fit)
+}
+
+
+
+
 # regular Venn
 compare_deg_non_proportional_figure(rownames(filtered_deseq2), rownames(filtered_limma), rownames(filtered_edger), pdf_file = "update_venn_before_GEDE.pdf")
 
@@ -431,7 +532,7 @@ out6$deg_sig_edger <- filtered_edger
 
 # here we still use overlaps of 2 for convenience
 
-out6$union_deg <- union(rownames(filtered_deseq2), rownames(filtered_edger))  # this is the finding before data correction
+out6$union_deg <- union(rownames(filtered_deseq2), rownames(filtered_edger))  # this is the finding before GEDE
 out6$overlap_deg <- intersect(rownames(filtered_deseq2), rownames(filtered_edger)) # this serves as ground truth finding
 
 save(out6, file="output_real_data_analysis.Rdata")
@@ -448,24 +549,28 @@ sample_grp_2 = rownames(df_meta[df_meta[deg_condition] == group_values[2], ])
 # loop DEGs by different sample rate, note that for the 200 vs 300 RNA-seq case, 20% can recover 87.5% DEGs
 # Note: here we count DEG recovery rate: those found in full data, NOT all DEGs here
 sample_raio = seq(0.1, 0.9, 0.1)
+sample_size = seq(15, 50, 5)
 
 # init saturation results 
 saturation_union_recover_rate = c()
 saturation_intersect_recover_rate = c()
+total_degs_named <- setNames(numeric(length(sample_size)), sample_size)
 
-for (raio in sample_raio) {
+# clean subsample results if need to rerun it
+out6 <- out6 [!grepl("^subsample_result_before_GEDE", names(out6 ))]
+
+for (raio in sample_size) {
   print(raio)
   # random sample 
-  set.seed(123)
-  select_1 = sample(sample_grp_1, size = round(raio * length(sample_grp_1)))
-  select_2 = sample(sample_grp_2, size = round(raio * length(sample_grp_2)))
+  set.seed(12345 + raio)
+  select_1 = sample(sample_grp_1, size = raio)
+  select_2 = sample(sample_grp_2, size = raio)
   keep_data = c(select_1, select_2)
   
   # filter df and metadata
   temp_df_count = input_data$counts[ , keep_data]
   temp_df_meta = input_data$group[keep_data, ]
-  
-  # call DEG, note we use "new_log2fc=1" here because we scale up the DEGs form full data
+  print(dim(temp_df_count)) 
 
   temp_deg_deseq2 <- run_DESeq2_for_df_and_meta(df_count=temp_df_count, df_meta=temp_df_meta, single_condition=deg_condition)
   temp_deg_deseq2 <- filter_deg(temp_deg_deseq2, log2fc=cutoff_log2fc)
@@ -487,6 +592,7 @@ for (raio in sample_raio) {
   # add plot stats
   saturation_union_recover_rate = c(saturation_union_recover_rate, temp_list$gt_recover_by_union_ratio)
   saturation_intersect_recover_rate = c(saturation_intersect_recover_rate, temp_list$gt_recover_by_intersect_ratio)
+  total_degs_named[as.character(raio)] <- length(temp_list$union_deg)
   
   # add this list to out6
   out6[[paste0("subsample_result_before_GEDE_ratio_", raio)]] <- temp_list
@@ -496,9 +602,10 @@ for (raio in sample_raio) {
 
 # save and plot results
 saturation_results = list()
-saturation_results$ratio = sample_raio
+saturation_results$ratio = sample_size
 saturation_results$union_recover = saturation_union_recover_rate
 saturation_results$intersect_recover = saturation_intersect_recover_rate
+saturation_results$total_degs = total_degs_named
 
 out6$saturation_before_GEDE = saturation_results
 rm(saturation_results)
@@ -520,7 +627,7 @@ p <- ggplot(df_long, aes(x = ratio, y = Recovery, color = Type, group = Type)) +
   geom_line(size = 1) +         # Draw lines
   geom_point(size = 2) +        # Add points
   geom_text(aes(label = round(Recovery, 3)), vjust = -0.5, size = 4) +  # Text labels
-  labs(title = "Saturation Analysis", x = "Subsample ratio", y = "Recovery ratio") +
+  labs(title = "Saturation Analysis", x = "Subsample size", y = "Recovery ratio") +
   scale_color_manual(values = c("red", "blue")) +  # Customize line colors
   theme_minimal()
 
@@ -583,17 +690,22 @@ sample_grp_2 = rownames(df_meta[df_meta[deg_condition] == group_values[2], ])
 # loop DEGs by different sample rate, note that for the 200 vs 300 RNA-seq case, 20% can recover 87.5% DEGs
 # Note: here we count DEG recovery rate: those found in full data, NOT all DEGs here
 sample_raio = seq(0.1, 0.9, 0.1)
+sample_size = seq(15, 50, 5)
 
 # init saturation results 
 saturation_union_recover_rate = c()
 saturation_intersect_recover_rate = c()
+total_degs_named <- setNames(numeric(length(sample_size)), sample_size)
 
-for (ratio in sample_raio) {
+# clear old results if needed
+out6 <- out6 [!grepl("^subsample_result_after_GEDE", names(out6))]
+
+for (ratio in sample_size) {
   print(ratio)
   # random sample 
-  set.seed(123)
-  select_1 = sample(sample_grp_1, size = round(ratio * length(sample_grp_1)))
-  select_2 = sample(sample_grp_2, size = round(ratio * length(sample_grp_2)))
+  set.seed(12345 + ratio)
+  select_1 = sample(sample_grp_1, size = ratio)
+  select_2 = sample(sample_grp_2, size = ratio)
   keep_data = c(select_1, select_2)
   
   # filter df and metadata (here is the data after GEDE)
@@ -622,6 +734,7 @@ for (ratio in sample_raio) {
   # add plot stats
   saturation_union_recover_rate = c(saturation_union_recover_rate, temp_list$gt_recover_by_union_ratio)
   saturation_intersect_recover_rate = c(saturation_intersect_recover_rate, temp_list$gt_recover_by_intersect_ratio)
+  total_degs_named[as.character(ratio)] <- length(temp_list$union_deg)
   
   # add this list to out6
   out6[[paste0("subsample_result_after_GEDE_ratio_", ratio)]] <- temp_list
@@ -629,21 +742,18 @@ for (ratio in sample_raio) {
 }
 
 
-
 # save and plot results
 saturation_results = list()
-saturation_results$ratio = sample_raio
+saturation_results$ratio = sample_size
 saturation_results$union_recover = saturation_union_recover_rate
 saturation_results$intersect_recover = saturation_intersect_recover_rate
+saturation_results$total_degs = total_degs_named
 
 out6$saturation_after_GEDE = saturation_results
 rm(saturation_results)
 
-
-
 # save results
 save(out6, file="output_real_data_analysis.Rdata")
-
 
 # generate line plots
 df <- data.frame(
@@ -659,7 +769,7 @@ p <- ggplot(df_long, aes(x = ratio, y = Recovery, color = Type, group = Type)) +
   geom_line(size = 1) +  # Draw lines
   geom_point(size = 2) + # Add points for better visibility
   geom_text(aes(label = round(Recovery, 3)), vjust = -0.5, size = 4) + # Add text labels
-  labs(title = "Saturation Analysis", x = "Subsample ratio", y = "Recovery ratio") +
+  labs(title = "Saturation Analysis", x = "Subsample size", y = "Recovery ratio") +
   scale_color_manual(values = c("red", "blue")) +  # Customize colors
   theme_minimal()
 
@@ -712,24 +822,72 @@ ggsave(filename = "update_fig_9_compare_saturation_analysis.pdf", plot = combine
 
 
 
+################################################### compare DEGs
+
 # check differences
 ### Why genes are not DEG in subsample
-extra_DEG_in_raw <- setdiff(out6$overlap_deg, out6$union_gede_deg)
-# 3904 / 3303 for w.o. winsoratization
-# 3732 / 3303 for w. winsoratization
+extra_DEG_in_raw <- setdiff(out6$overlap_deg, out6$overlap_gede_deg)
+extra_DEG_in_gede <- setdiff(out6$overlap_gede_deg, out6$overlap_deg)
+
+# 2987 vs 2899
+length(out6$overlap_deg) 
+length(out6$overlap_gede_deg) 
 
 # count overlaps
-length(intersect(out6$overlap_deg, out6$union_gede_deg))  #  2677/2707, approx. 2/3
+length(intersect(out6$overlap_deg, out6$overlap_gede_deg))  #  2003, approx. 2/3
+length(setdiff(out6$overlap_deg, out6$overlap_gede_deg))  #  984, approx. 1/3
+length(setdiff(out6$overlap_gede_deg, out6$overlap_deg))  #  896, approx. 1/3
 
 # make a overlap venn plot
-compare_deg_non_proportional_figure(out6$union_deg, out6$overlap_deg, out6$union_gede_deg, names = c("Raw Union DEG", "Raw Overlap DEG", "GEDE Overlap DEG"), pdf_file = "update_venn_DEG_overlaps.pdf")
+compare_deg_non_proportional_figure(out6$union_deg, out6$overlap_deg, out6$overlap_gede_deg, names = c("Raw Union DEG", "Raw Overlap DEG", "GEDE Overlap DEG"), pdf_file = "update_venn_DEG_overlaps.pdf")
+
+compare_deg_proportional_figure(out6$union_deg, out6$overlap_deg, out6$overlap_gede_deg, names = c("Raw Union DEG", "Raw Overlap DEG", "GEDE Overlap DEG"), pdf_file = "update_venn_DEG_overlaps_proportion.pdf")
+
+
+
+
+
+
+
+################################################### load data here for further comparisons
+
+out6_deg = list(gede = out6$overlap_gede_deg, raw = out6$overlap_deg, shared=intersect(out6$overlap_deg, out6$overlap_gede_deg),
+                extra_raw = extra_DEG_in_raw, extra_gede = extra_DEG_in_gede)
+
+# save to file
+save(out6_deg, file="output_DEG_comparison.Rdata")
+
+# load("output_DEG_comparison.Rdata")  # here is out6_deg
+# load("output_real_data_analysis.Rdata")   # here is out6
+
+
+# print length of all elements in out6_deg
+sapply(out6_deg, length)
+
+
+
+### 1st, let's check why those genes are not DEG
+
+# note: there are genes not recorded due to low depth: filter out by CPM 1 cutoff
+total_counts <- rowSums(df_count)
+quantile(total_counts)  # 25% - 29086
+
+test = setdiff(extra_DEG_in_raw, rownames(out6$deg_gede_records_deseq2))
+length(test)  # 150 genes
+missing_gene_counts <- c()
+for (i in seq_along(test)) {
+  missing_gene_counts <- c(missing_gene_counts, sum(df_count[test[i], ]))
+  if (sum(df_count[test[i], ]) > 10000) {
+    print(test[i])
+  }
+}
+max(missing_gene_counts)
+
 
 temp_record_deseq2 <- out6$deg_gede_records_deseq2[rownames(out6$deg_gede_records_deseq2) %in% extra_DEG_in_raw, ]
-dim(temp_record_deseq2)  # 1061/915
-
-# print results out
-sum(temp_record_deseq2$padj > 0.05)   # 197
-sum(abs(temp_record_deseq2$log2FoldChange) < 0.5) # 1060
+dim(temp_record_deseq2)  # 834
+sum(temp_record_deseq2$padj > 0.05)   # 377
+sum(abs(temp_record_deseq2$log2FoldChange) < 0.5) # 740
 temp_abs_log2fc <- abs(temp_record_deseq2$log2FoldChange)
 
 pdf("update_fig_10_abs_log2fc_for_those_missing_in_gede.pdf", width = 7, height = 5)
@@ -743,12 +901,16 @@ hist(temp_abs_log2fc,
      ylab = "Frequency")
 dev.off()
 
+
+
 # we also plot those extra genes in GEDE
-extra_gene_in_gede <- setdiff(out6$union_gede_deg, out6$overlap_deg)
-temp_record_deseq2 <- out6$deg_all_records_deseq2[rownames(out6$deg_all_records_deseq2) %in% extra_gene_in_gede, ]
-dim(temp_record_deseq2)  # 626
-sum(temp_record_deseq2$padj > 0.05)   # 231
-sum(abs(temp_record_deseq2$log2FoldChange) < 0.5) # 456
+test = setdiff(extra_DEG_in_gede, rownames(out6$deg_all_records_deseq2))
+length(test)  # 0 genes
+
+temp_record_deseq2 <- out6$deg_all_records_deseq2[rownames(out6$deg_all_records_deseq2) %in% extra_DEG_in_gede, ]
+dim(temp_record_deseq2)  # 896
+sum(temp_record_deseq2$padj > 0.05)   # 697
+sum(abs(temp_record_deseq2$log2FoldChange) < 0.5) # 466
 
 temp_abs_log2fc <- abs(temp_record_deseq2$log2FoldChange)
 
@@ -765,18 +927,16 @@ dev.off()
 
 
 # let's plot out LFC for those missing in GEDE
-gede_non_gene_ids <- setdiff(out6$overlap_deg, out6$union_gede_deg)
-length(gede_non_gene_ids)  # 1227 / 1025
-gede_extra_gene_ids <- setdiff(out6$union_gede_deg, out6$overlap_deg)
-length(gede_extra_gene_ids) # 626 / 596
 
-log_df = log2(df_count+1)
-dim(log_df)
-dim(new_df)
 
 # LFC (log-fold-changes) before/after GEDE, using log-data
-n0 <- sum(numeric_group1==0) #191 black subjects
-n1 <- sum(numeric_group1)    #298 white subjects
+all(rownames(df_meta) == colnames(log_df))
+
+# split by groups
+# Convert df_meta[[deg_condition]] to a 0 and 1 vector
+numeric_group1 <- ifelse(df_meta[[deg_condition]] == as.factor(df_meta[[deg_condition]])[1], 0, 1)
+n0 <- sum(numeric_group1==0) 
+n1 <- sum(numeric_group1)    
 x <- ifelse(numeric_group1==0, -1/n0, 1/n1)
 LFC.orig <- drop(log_df%*%x); LFC.gede <- drop(new_df%*%x)
 
@@ -793,15 +953,15 @@ abline(0, 1, lty = 2)
 # Assume names(LFC.orig) and names(LFC.gede) are gene IDs
 
 # 1. Plot gede_non_gene_ids in red
-common_red <- intersect(names(LFC.orig), gede_non_gene_ids)
+common_red <- intersect(names(LFC.orig), out6_deg$extra_raw)
 points(LFC.orig[common_red], LFC.gede[common_red], pch = 20, col = "red")
 
 # 2. Plot gede_extra_gene_ids in blue
-common_blue <- intersect(names(LFC.orig), gede_extra_gene_ids)
+common_blue <- intersect(names(LFC.orig), out6_deg$extra_gede)
 points(LFC.orig[common_blue], LFC.gede[common_blue], pch = 20, col = "blue")
 
 # Optionally add a legend
-legend("topleft", legend = c("gede_non_gene_ids", "gede_extra_gene_ids"), 
+legend("topleft", legend = c("extra_DEG_raw", "extra_DEG_gede"), 
        col = c("red", "blue"), pch = 20, bty = "n")
 
 # Close PDF device
@@ -810,36 +970,44 @@ dev.off()
 
 
 
+################################################### step3, check biological meanings by pathway 
+
+# load("output_DEG_comparison.Rdata")  # here is out6_deg, only need this
+# load("output_real_data_analysis.Rdata")   # here is out6
+
+# the gene ids are  Ensembl Gene ID format, but with version suffixes, need to trim suffix
+head(out6_deg$extra_gede)
+
+
+prepare_david_gene_list <- function(gene_list, 
+                                    file_path = "gene_list_for_david.txt", 
+                                    quote = FALSE) {
+  if (length(gene_list) == 0) {
+    stop("The input gene list is empty.")
+  }
+  
+  # Strip version suffix (e.g., ENSG00000187583.10 → ENSG00000187583)
+  cleaned_genes <- sub("\\..*", "", gene_list)
+  
+  # Write to file — no header, no quotes
+  write.table(cleaned_genes,
+              file = file_path,
+              row.names = FALSE,
+              col.names = FALSE,
+              quote = quote)
+  
+  message(paste("Gene list written to", file_path))
+  
+  return(invisible(cleaned_genes))
+}
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+prepare_david_gene_list(out6_deg$extra_gede, file_path = "david_extra_DEG_in_gede.txt")
+prepare_david_gene_list(out6_deg$extra_raw, file_path = "david_extra_DEG_in_raw.txt")
+prepare_david_gene_list(out6_deg$shared, file_path = "david_shared_DEG.txt")
+prepare_david_gene_list(out6_deg$gede, file_path = "david_all_gede_DEG.txt")
+prepare_david_gene_list(out6_deg$raw, file_path = "david_all_raw_DEG.txt")
 
 
 
