@@ -1,0 +1,566 @@
+---
+title: "step7_reproduce_Xing_real_analysis_res"
+output: html_document
+author: "Shaopeng Liu"
+date: "2025-06-30"
+---
+
+# Initiate
+```{r init, echo=FALSE, message=FALSE}
+library(knitr)
+library(rmarkdown)
+library(pander)                         #more powerful table
+panderOptions('digits', 4)
+panderOptions('round', 4)
+panderOptions('table.emphasize.rownames', FALSE)
+panderOptions('table.split.table', Inf)      #do not split table
+panderOptions('table.style', 'rmarkdown')
+panderOptions('keep.trailing.zeros', TRUE)
+
+## set some global options for the R code chunks
+opts_chunk$set(echo=FALSE, message=FALSE, cache=FALSE, warning=FALSE, results='hide', fig.path='results/fig', dpi=300, cache.path='.cache/')
+options(digits=3)
+
+set.seed(3369)
+
+####  Use the following line to manually generate the report
+## rmarkdown::render("Realdata_PartI.Rmd", output_format="pdf_document")
+
+## To produce a manual newline between tables
+newline <- function(n=1) { cat(paste(rep("&nbsp;\n", n), collapse=" ")) }
+
+## load packages
+library(GEDE)
+library(limma)
+library(DESeq2)
+library(ggplot2)
+library(GEDE)
+library(kableExtra) #complex tables
+
+# change output dir
+out_dir = "/home/sliu/github/GEDE_benchmark/output/step7_reproduce_Xing_real_data_results"
+# setwd(out_dir)  # use this in local R
+knitr::opts_knit$set(root.dir = out_dir)  # use this in RStudio
+
+## Winsorization (replacing outliers by data-driven thresholds) based
+## on Hampel filter
+Winsor <- function(Y, nMAD=3) {
+  if (is.null(nMAD)) { #no filter
+    out.upper.ids <- out.lower.ids <- integer(0)
+  } else {
+    Y <- as.matrix(Y)
+    Ymed <- rowMedians(Y, na.rm=TRUE)
+    Ymad <- rowMads(Y, na.rm=TRUE)
+    U <- Ymed+nMAD*Ymad; L <- Ymed-nMAD*Ymad
+    out.upper.ids <- which(Y-U>0, arr.ind=TRUE)
+    out.lower.ids <- which(Y-L<0, arr.ind=TRUE)
+    ## replace outliers by low/upper thresholds
+    for (i in 1:nrow(out.upper.ids)) {
+      i2 <- out.upper.ids[i,1]; j <- out.upper.ids[i,2]
+      Y[i2,j] <- U[i2]
+    }
+    ##
+    for (i in 1:nrow(out.lower.ids)) {
+      i2 <- out.lower.ids[i,1]; j <- out.lower.ids[i,2]
+      Y[i2,j] <- L[i2]
+    }
+  }
+  return(list(Y=Y, out.upper.ids=out.upper.ids, out.lower.ids=out.lower.ids, U=U, L=L))
+}
+```
+
+
+# 1. Input data and processing
+The R image file `input_Recount3_BRCA_race.Rdata` contains 3 elements: metadata (use the "tcga.gdc_cases.demographic.race" column for condition), raw count table "counts" and polished count table "gede_counts"
+
+### 1.1 First, we identify and remove samples with extremely low total number of reads.
+```{r prep1, fig.width=5, fig.height=5, fig.cap="Two samples with extremely low total number of reads were removed. "}
+objs <- load("input_Recount3_BRCA_race.Rdata")
+
+input_data <- Data_BRCA
+race = "tcga.gdc_cases.demographic.race"
+
+# prep data for GEDE
+df_count0 = input_data$counts; m0 <- nrow(df_count0); n0 <- ncol(df_count0)
+df_meta = input_data$group
+temp_metadata <- df_meta[colnames(df_count0), , drop = TRUE]  # Reorder to match count data
+
+## # this is group vector
+## temp_group <- factor(temp_metadata[[deg_condition]])
+temp_group <- factor(temp_metadata[[race]])
+
+## limma does not like spaces
+levels(temp_group) <- c("black", "white")
+
+# numeric for GEDE input: white: 1; black: 0
+Race <- as.numeric(temp_group) - 1
+
+## identify samples with extremely low total number of reads (in millions)
+TNR <- colSums(df_count0)/1e6
+o <- Winsor(t(TNR))
+samples.low <- o$out.lower.ids[, 2]
+## 
+df_count1 <- df_count0[, -samples.low]; n <- ncol(df_count1)
+temp_metadata1 <- temp_metadata[-samples.low,]
+temp_group1 <- temp_group[-samples.low]
+Race <- Race[-samples.low]
+
+hist(TNR, 51, xlab="Total Reads", main=""); abline(v=o$L, lty=2)
+
+
+```
+
+### 1.2 Two such samples were removed: samples `r samples.low`. Next, I decided to remove genes with large proportions of zeros. 
+```{r, prep2, fig.width=10, fig.height=25, fig.cap="Empirical distribution before and after log-transformation."}
+## Xing 04/12/2025. Filtering genes with excessive zeros
+n.zeros <- rowsums(df_count1==0)
+df_count <- df_count1[n.zeros <= n/2,]; m <- nrow(df_count)
+
+# log2 transformation: GEDE need log data because it assumes multi-normal dist
+log_df = log2(df_count+1)
+
+## log-transformation improves normality. 
+W0 <- apply(df_count, 1, function(x) as.numeric(shapiro.test(x)$statistic))
+W1 <- apply(log_df, 1, function(x) as.numeric(shapiro.test(x)$statistic))
+
+kable(rbind(Orig=summary(W0), Log=summary(W1)), caption="Summary of the W statistics of the original counts and log-transformed data. W statistics reflect the correlation between the empirical distribution and theoretical normal distribution. A large W statistic implies that the data are more normally distributed.")
+
+
+## randomly select a few genes for visualization
+set.seed(123)
+idx <- sample(m, 5)
+Y0 <- df_count[idx,]; Y1 <- log_df[idx, ]
+par(mfrow=c(6,2))
+for (i in 1:length(idx)) {
+  g <- idx[i]
+  hist(Y0[i,], breaks=21, xlab="Counts", main=paste0("Gene ", g, ", W=", round(W0[g], 3)))
+  hist(Y1[i,], breaks=21, xlab="Log-expression", main=paste0("Gene ", g, ", W=", round(W1[g], 3)))
+}
+
+
+```
+
+Specifically, a total number of `r sum(n.zeros>n/2)` genes that were not expressed for more than half of the samples were removed from further analyses. The remain dataset contains `r m` genes. It can be shown from the above results that the variance stabilization transformation, $\log_{2}(x)$, greatly improves the normality of the data.
+
+```{r normalization}
+
+meds <- colMedians(log_df)
+mmed <- mean(meds)
+iqrs <- colIQRs(log_df)   # For each column 𝑗, compute the interquartile range (IQR = Q3 - Q1).
+miqr <-mean(iqrs)  # the average spread across all variables.
+## median-IQR normalization
+Y.log.norm <- miqr*sweep(sweep(log_df, 2, meds), 2, iqrs, "/") +mmed
+
+```
+
+**06/07/2025**: We checked the median and IQR of gene expressions of all samples. It turns out that there is considerable variation of these summary metrics. I decide to apply a median-IQR normalization to the data, the result is named as `Y.log.norm`. 
+Interpretation of Y.log.norm:
+Per-variable medians removed, then all shifted to a common median.
+Per-variable IQR variability removed, then all scaled to have a common IQR.
+
+This makes all variables comparable in center and variability, without arbitrarily setting everything to 0/1.
+This process is robust normalization, analogous to z-scoring but using median and IQR rather than mean and SD:
+Median = robust measure of location.
+IQR = robust measure of scale.
+
+
+### 1.3 Apply GEDE
+```{r, GEDE, fig.width=10, fig.height=15, fig.cap="An illustration of the GEDE effects (applied to the log2-transformed data). Red dots are potential outliers that are 2 MAD away from the sample median. "}
+# run gede based on log_df. Takes about 30 seconds in my computer
+t1 <- system.time(gede_output <- GEDE(t(log_df), X=Race, K.method="vprop", HD=TRUE))
+t1b <- system.time(gede_output.norm <- GEDE(t(Y.log.norm), X=Race, K.method="vprop", HD=TRUE))
+
+# GEDE improved expressions
+new_df1 = transpose(gede_output$Ystar)
+new_df2 = transpose(gede_output.norm$Ystar)
+rownames(new_df1) <- rownames(log_df); colnames(new_df1) <- colnames(new_df1)
+rownames(new_df2) <- rownames(log_df); colnames(new_df2) <- colnames(new_df2)
+
+## identify outliers based on marginal distribution of log_df, using a
+## liberal 2 MAD cutoff
+outliers1 <- as.data.frame(Hampel(t(log_df), nMAD=2, arr.ind=TRUE))
+colnames(outliers1) <- c("sample", "gene")
+## 
+outliers2 <- as.data.frame(Hampel(t(Y.log.norm), nMAD=2, arr.ind=TRUE))
+colnames(outliers2) <- c("sample", "gene")
+## 6.3% of data are marked as potential outliers
+## round(nrow(outliers2)/length(log_df)*100, 1)
+
+# transfer back to count by 2**x-1, floored at 0
+new_df_count1 = round(pmax(2^new_df1-1, 0))
+new_df_count2 = round(pmax(2^new_df2-1, 0))
+
+
+par(mfrow=c(3,2))
+for (i in idx[1:3]) {
+  yi <- new_df1[i,]; xi <- log_df[i,]; xy <- range(c(xi, yi))
+  plot(yi~xi, xlab="Before GEDE", ylab="After GEDE (original)", xlim=xy, ylim=xy, main=i)
+  out <- subset(outliers2, gene==i)[["sample"]]
+  points(yi[out]~xi[out], pch=19, col=2)
+  abline(0,1)
+  ##
+  yi <- new_df2[i,]; xi <- log_df[i,]; xy <- range(c(xi, yi))
+  plot(yi~xi, xlab="Before GEDE", ylab="After GEDE (normalized)", xlim=xy, ylim=xy, main=i)
+  out <- subset(outliers2, gene==i)[["sample"]]
+  points(yi[out]~xi[out], pch=19, col=2)
+  abline(0,1)
+}
+
+```
+The above figure shows that, by and large, GEDE does not change the log-expression values dramatically. Almost all data points that had significant changes were potential outliers, defined as data that had more than 2 MAD (median absolute deviation) away from per-gene sample median.
+
+
+### 1.4 LFC before/after GEDE
+```{r, LFC-var-comparison, fig.width=10, fig.height=5, fig.cap="Impact of GEDE to LFC and pooled sample variance. "}
+
+# LFC (log-fold-changes) before/after GEDE, using log-data
+n0 <- sum(Race==0) #191 black subjects
+n1 <- sum(Race)    #298 white subjects
+x <- ifelse(Race==0, -1/n0, 1/n1)
+
+# this is for normalized data
+LFC.orig <- drop(Y.log.norm%*%x); LFC.gede <- drop(new_df2%*%x)
+
+# this is for non-normalized data
+# LFC.orig <- drop(log_df%*%x); LFC.gede <- drop(new_df1%*%x)
+
+
+## Also compare the pooled variance
+X <- cbind(1, Race); Hat <- X%*%solve(crossprod(X))%*%t(X)
+yhat0 <- Y.log.norm%*%Hat; yhat1 <- new_df2%*%Hat
+res0 <- Y.log.norm-yhat0; res1 <- new_df2-yhat1
+var0 <- rowSums(res0^2)/(n-2); var1 <- rowSums(res1^2)/(n-2)
+
+par(mfrow=c(1,2))
+xy <- range(c(LFC.orig, LFC.gede))
+plot(LFC.gede~LFC.orig, xlim=xy, ylim=xy, main="LFC"); abline(0,1)
+##
+xy <- range(c(var0, var1))
+plot(var1~var0, xlim=xy, ylim=xy, xlab="Before GEDE", ylab="After GEDE", main="Pooled sample variance")
+abline(0,1)
+
+
+```
+
+The above figure shows that: (a) LFC (log-fold-change) before and after GEDE are about the same, and (b) GEDE greatly reduced pooled sample variance. These findings explain why the statistical power after GEDE was much higher.
+
+SL note: using non-normalized data will generate similar results, so I didn't add a new figure here. 
+
+
+### 1.5 LFC distribution before/after GEDE with Winsorization
+```{r LFC-distr, fig.width=10, fig.height=5, fig.cap="Empirical distribution of LFCs."}
+## Winsorized the data using 3 MADs rule.
+o1 <- Winsor(log_df, nMAD=3); o2 <- Winsor(Y.log.norm, nMAD=2)
+## around 1.3% of data were winsorized for both datasets (orig. and
+## normalized)
+(nrow(o1$out.upper.ids)+nrow(o1$out.lower.ids))/length(log_df)
+(nrow(o2$out.upper.ids)+nrow(o2$out.lower.ids))/length(Y.log.norm)
+
+## winsorized log-expressions
+Yw1 <- o1$Y; Yw2 <- o2$Y 
+## the winsorized count data
+df_count1.w <- round(pmax(2^Yw1-1, 0))
+df_count2.w <- round(pmax(2^Yw2-1, 0))
+
+## outliers3 <- as.data.frame(rbind(o$out.upper.ids, o$out.lower.ids))
+## colnames(outliers3) <- c("gene", "sample")
+
+## calculate LFCs
+LFCw1 <- drop(Yw1%*%x); LFCw2 <- drop(Yw2%*%x)
+
+## for comparison, calculate permuited LFCs
+set.seed(111)
+nperms <- 20
+xx <- sapply(1:nperms, function(i) x[sample(n)])
+LFCw1.perm <- as.vector(Yw1%*%xx); LFCw2.perm <- as.vector(Yw2%*%xx)
+
+## check the 0.95 quantile of permuted LFCs
+q1 <- quantile(abs(LFCw1.perm), 0.95); q2 <- quantile(abs(LFCw2.perm), 0.95)
+
+## visualize LFC after winsorization
+par(mfrow=c(1,2))
+hist(LFCw1, 51, ylim=c(0, 3), freq=FALSE, xlab="LFC", main="Original")
+abline(v=-q1, lty=2); abline(v=q1, lty=2); lines(density(LFCw1.perm), lwd=2)
+##
+hist(LFCw2, 51, ylim=c(0, 3), freq=FALSE, xlab="LFC", main="Normalized")
+abline(v=-q2, lty=2); abline(v=q2, lty=2); lines(density(LFCw2.perm), lwd=2)
+
+```
+
+In the above figure, I plotted the histograms of LFCs (using both original and normalized data) and compared them with the empirical density functions (thick curves) of LFCs from `r nperms` permuted data, serving as the null distributions.  
+
+From this figure, we see that
+  1. The race effect (black v. white) is quite dramatic. For example, for the normalized data, a total of `r sum(abs(LFCw2)>q2)` (or `r round(mean(abs(LFCw2)>q2)*100, 1)` percent) genes have significantly greater LFCs related to race than the cutoff determined by the the 99\% quantile of the null (permuted) distribution of the absolute values of LFCs calculated from the normalized data ($q=`r round(q2, 3)`$), represented by the vertical broken lines in the figure.
+  2. The histogram of LFCs for the original data is much more asymmetric (median LFC=`r round(median(LFCw1), 3)`) than that of the normalized data (median LFC=`r round(median(LFCw2), 3)`). This asymmetric could lead to inflated type I error in downstream DE analysis. Therefore, I decided to use the normalized data for further analysis.
+  
+
+**Remark**: The above statements based on LFCs are only a rough estimate, because individual genes have different *variances*, so the DE analysis should be conducted for each gene separately by formal hypothesis testing procedures, which is the topic for the next section. However, this pooled LFC analysis gave us a good justification to use `r round(q2, 3)` as an LFC threshold in addition to using adjusted $p$-values for selecting DEGs.
+
+
+# DEGs
+### 2.1 Oracl DEGs
+```{r oracle-DEGs}
+
+## Run limma()
+rr1.limma <- as.data.frame(limma(Yw1, Race))
+rr2.limma <- as.data.frame(limma(Yw2, Race))
+
+## Run DESeq2
+dds1 <- DESeqDataSetFromMatrix(
+  countData = df_count1.w,
+  colData = temp_metadata1, 
+  design = as.formula(paste0("~ ", race))
+)
+mod1.deseq <- DESeq(dds1)
+race.levels <- unique(temp_metadata1[[race]])
+rr1.deseq <- results(mod1.deseq, contrast = c(race, race.levels[1], race.levels[2]))
+## normalized
+dds2 <- DESeqDataSetFromMatrix(
+  countData = df_count2.w,
+  colData = temp_metadata1, 
+  design = as.formula(paste0("~ ", race))
+)
+mod2.deseq <- DESeq(dds2)
+race.levels <- unique(temp_metadata1[[race]])
+rr2.deseq <- results(mod2.deseq, contrast = c(race, race.levels[1], race.levels[2]))
+
+## df_count2.w: winsorized -> transfer back to count data
+## Race: white (1) v.s black (0) dummy ## variable.
+## temp_metadata1: meta-data.
+## rr2.limma, rr2.deseq: results for defining the oracle DEGs
+save(df_count2.w, LFCw2, LFCw2.perm, Race, temp_metadata1, rr2.limma, rr2.deseq, file=paste0(out_dir, "/", "TCGA_GEDE.rda"))
+
+```
+
+Results are stored in `TCGA_GEDE.rda`. In this R image file, we have 
+
+ - `df_count2.w`: count data, normalized and winsorized
+ - `LFCw2`: LFC of race difference computed from `Yw2` (winsorized) data.
+ - `LFCw2.perm`: LFC of race difference computed from `Yw2` with 20 permutations (a reference of the null distribution of LFCs).
+ - `Race`: white (1) v.s black (0) dummy variable. 
+ - `temp_metadata1`: meta-data
+ - `rr2.limma`, `rr2.deseq`: results from limma and DESeq2 for defining the oracle DEGs. 
+
+
+Please see R script `realdata_analysis1.R` for the most time-consuming part of the analysis of this report. The results will be presented in Part II of the report.
+
+
+### (Start here for DEG) 2.2 DEG analysis
+```{r load_deg_data, echo=FALSE, include=FALSE, message=FALSE}
+load(paste0(out_dir, "/","HT_results.rda")) #RR.HT
+load(paste0(out_dir, "/","TCGA_GEDE.rda"))
+nreps <- length(RR.HT[[1]])     #repititions used in the analysis
+m <- nrow(RR.HT[[1]][[1]][[1]]) #number of genes
+
+
+## RR: a list of rr produced by htfun() with types of data and nreps
+sumfun <- function(RR, DEGs, sig=0.05, fc.thresh=0, p.adj=FALSE, AUC.fc=FALSE) {
+  dnames <- names(RR); nreps <- length(RR[[1]])
+  m <- nrow(RR[[1]][[1]]); m1 <- length(DEGs); m0 <- m-m1
+  DEGs.bin <- rep(0, m); DEGs.bin[DEGs] <- 1
+  sumlst <- lapply(RR, function(rrr) {
+    sum.k <- sapply(rrr, function(rr) {
+      pvals <- rr[,"t.p.Grp"]; fc <- rr[,"fc"]
+    if (p.adj) {
+      adjP <- p.adjust(pvals, "BH")
+      degs <- which(adjP<sig & fc > fc.thresh)
+    } else {
+      degs <- which(pvals<sig & fc > fc.thresh)
+    }
+    if (AUC.fc) { #use LFC to compute AUC
+      rr.auc <- auc(DEGs.bin, fc)
+    } else { #use pvals to compute AUC
+      rr.auc <- auc(DEGs.bin, 1-pvals)
+    }
+    ## degs <- which(adjP<0.05 & fc > fc.thresh)
+    return(c(TPR=100*length(intersect(degs, DEGs))/m1,
+             FPR=100*length(setdiff(degs, DEGs))/m0,
+             AUC=100*rr.auc))
+    })
+    return(sum.k)
+  } )
+  return(sumlst)
+}
+
+```
+
+
+###### 2.2.1 Defining Oracle DEGs
+
+```{r process-results, results='asis'}
+
+## Define oracle DEGs
+adjp.cutoff <- 0.05; LFC.quantile <- .99
+LFC.cutoff <- quantile(abs(LFCw2.perm), LFC.quantile)
+sig <- rr2.limma[, "t.adjp.Race"]< adjp.cutoff & rr2.deseq$padj < adjp.cutoff
+oracle.DEGs <- which(sig & abs(LFCw2) > LFC.cutoff)  # 5608
+
+
+```
+
+We define the oracle DEGs in this way. 
+1. Use the log2-transformed, median-IQR normalized, and winsorized data as the input data.
+2. Apply both `DESeq2` and `limma` to this dataset, and compute the LFCs between the two racial groups.
+3. A gene is selected as an oracle DEG, if it has adjusted $p$-value less than `r adjp.cutoff` from both `DESeq2` and `limma`, and the absolute value of the corresponding LFC is greater than `r LFC.quantile` quantile of all LFCs computed from the permuted data (see Report Part I), which is $q_{0.95}$=`r round(LFC.cutoff, 3)`.
+**Remarks**: 
+
+  1. There are a total of `r length(oracle.DEGs)` oracle DEGs defined according to our criterion. According to the distribution of LFCs, especially in comparison of permutation-based LFCs, I think this number (around `r round(100*length(oracle.DEGs)/m, 1)`% of all genes) is reasonable. 
+  2. If we use more stringent criteria to select DEGs (e.g., FDR<0.01 and LFC>0.5), we will have smaller number of oracle DEGs. It leads to higher statistical power in the subsequent analyses (because those DEGs have very strong effect size) but also higher type I error (because oracle NDEGs could have substantially nonzero LFCs). I have tried two different ways of defining oracle DEGs in the final subsection. 
+  
+
+###### 2.2.2 Analysis Based on Random Subsampling
+We designed the following analyses based on the log2-transformed and normalized data to demonstrate the utility of GEDE in real data analysis. 
+
+1. Randomly select $n_{1}$ white subjects and $n_{2}$ black subjects, such that: (a) the total sample size is $n = n_{1} +n_{2} \in \{80, 90, 100\}$, and (b) the race ratio of the subsample, $n_{1}/n_{2}$, is approximately equal to that of the entire dataset: `r round(sum(Race==1)/sum(Race==0), 3)`.
+2. Use `limma` to perform DE analysis and select DEGs with adjusted $p$-value less than 0.05. The following processed data were used in this analysis:
+   - The original data without any enhancement.
+   - GEDE enhanced data, with the following variations:
+     + **CV**: Use samples not selected in the current subset (e.g., for n=80, use all remaining 409 samples) as the training data to develop a GEDE model and apply it to the test data.
+     + **Naïve**: Use the test data to develop the GEDE model and apply this model to the test data itself.
+     + For both cases, the number of latent factors ($K$) is set to be 1, 3, 5, or determined by the 80% variance rule. 
+   - LASSO enhanced data (**not done yet**).
+3. Repeat the above analysis for `r nreps` repititions, and record the average performance metrics of DE analysis, which include true positive rate (TPR), false positive rate (FPR), and AUC (using unadjusted $p$-values as the discriminant statistic).
+
+
+The results are summarized in the following table. 
+
+```{r render-tables, results='asis'}
+
+## produce summaries:
+sumLst1 <- lapply(RR.HT, function(RR) sumfun(RR, DEGs=oracle.DEGs, sig=0.05, fc.thresh=0, p.adj=TRUE))
+sumtabs <- lapply(sumLst1, function(ss) Reduce("+", ss)/nreps)
+
+tab1 <- t(Reduce("rbind", sumtabs))
+
+## Add column and row groups 
+round(tab1,1) %>%
+  kable(
+    format    = "latex",
+    booktabs  = TRUE,
+    longtable = TRUE,
+    caption   = "Results of real data analysis. CV: GEDE models were developed with independent training data. Naïve: GEDE models were developed with the test data. All performance metrics are presented in percentage scale for better readability. ",
+    linesep   = ""         # remove extra lines between rows
+  ) %>%
+  kable_styling(
+    latex_options = c("hold_position", "repeat_header"),
+    position      = "center",
+    font_size     = 11
+  ) %>%
+  ## add headers (column groups)
+  add_header_above(c(" " =1, "n=80" = 3, "n=90" = 3, "n=90" = 3)) %>%
+  ## 2nd header row: default variable names
+  row_spec(0, bold = TRUE) %>% 
+  # group rows 1–4 under “n = 80” and 5–8 under “n = 100”
+  pack_rows("No enhancement",  1, 1, bold = TRUE) %>%
+  pack_rows("CV",  2, 5, bold = TRUE) %>%
+  pack_rows("Naïve", 6, 9, bold = TRUE)
+
+
+```
+
+From the above table, we conclude:
+
+ 1. The FPR are exceptionally high for DE analysis using the original data. 
+ 2. Compared with the results of DE analysis using the original data, applying GEDE greatly improves the AUC and type I error control. 
+ 2. Between the two approaches of developing GEDE models, CV (which uses independent training data) is significantly better than the naive (only uses the test data) approach. This is no surprise because: (a) in the CV approach, more data are available for training the GEDE model, and (b) there is the concern of data "double dipping" in the naive approach, which may have led to certain bias in the enhanced data hence worse performance of the DE analysis. 
+ 3. Performance of GEDE is quite stable to the choice of $K$. Consistent with our simulation studies, we achieved the best AUC with relatively small $K$. In fact, using $K=1$ achieves the best AUCs for the CV cases, and using $K=3$ resulted in two out of three best AUCs. 
+
+
+**Remarks**: 
+
+1. AUCs in this table were produced based on $p$-values (or equivalently, the $t$-statistics). If I use the LFCs to compute the AUCs, there is no significant difference between the GEDE enhanced data and the original data. This is not a surprise, because GEDE is a *noise-reduction* method which does not change the expectations (hence the LFCs) of gene expressions.  A consequence of this argument is that, if the selection procedure of DEGs rely too much on the LFC cutoff but not the $p$-values, GEDE won't help you. 
+2. I first tried to define DEGs based on unadjusted $p$-values. Unfortunately, even after GEDE the FPRs were all greater than 5%, especially with the naive method. That is why I switched to using the BH adjusted $p$-values to select DEGs. 
+
+
+### 2.3 use hard threshold to define DEGs
+```{r other-oracle-DEGs}
+
+## produce summaries for a smaller but more extremely differentially
+## expressed genes
+adjp.cutoff <- 0.01; LFC.cutoff <- 0.5
+sig <- rr2.limma[, "t.adjp.Race"]< adjp.cutoff & rr2.deseq$padj < adjp.cutoff
+oracle.DEGs2 <- which(sig & abs(LFCw2) > LFC.cutoff)
+
+sumLst2 <- lapply(RR.HT, function(RR) sumfun(RR, DEGs=oracle.DEGs2, sig=0.05, fc.thresh=0, p.adj=TRUE))
+tab2 <- t(Reduce("rbind", lapply(sumLst2, function(ss) Reduce("+", ss)/nreps)))
+
+## less stringent DEGs
+adjp.cutoff <- 0.1; LFC.cutoff <- 0.25
+sig <- rr2.limma[, "t.adjp.Race"]< adjp.cutoff & rr2.deseq$padj < adjp.cutoff
+oracle.DEGs3 <- which(sig & abs(LFCw2) > LFC.cutoff)
+
+sumLst3 <- lapply(RR.HT, function(RR) sumfun(RR, DEGs=oracle.DEGs3, sig=0.05, fc.thresh=0, p.adj=TRUE))
+tab3 <- t(Reduce("rbind", lapply(sumLst3, function(ss) Reduce("+", ss)/nreps)))
+
+
+```
+
+**Remark**: *This section is designed to understand how the performance metrics may depend on the definition of oracle DEGs. The results are intended for internal understanding, and we do not have to show them in the paper.*
+
+
+I tried two more criteria to define oracle DEGs.
+
+1. **Stringent**: A gene is called DEG, if the associated adjusted $p$-value calculated from both `limma` and `DESeq2` were less than $0.01$, and the LFC is greater than $0.5$. This is a more **stringent** criterion that produced `r length(oracle.DEGs2)` oracle DEGs.
+
+2. **Liberal**: A gene is called DEG, if the associated adjusted $p$-value calculated from both `limma` and `DESeq2` were less than $0.10$, and the LFC is greater than $0.25$. This is a more **liberal** criterion that produced `r length(oracle.DEGs3)` oracle DEGs.
+
+```{r render-tables-other, results='asis'}
+
+round(tab2,1) %>%
+  kable(
+    format    = "latex",
+    booktabs  = TRUE,
+    longtable = TRUE,
+    caption   = "Results of real data analysis using a more \\textbf{stringent} list of oracle DEGs. CV: GEDE models were developed with independent training data. Naïve: GEDE models were developed with the test data. All performance metrics are presented in percentage scale for better readability. ",
+    linesep   = ""         # remove extra lines between rows
+  ) %>%
+  kable_styling(
+    latex_options = c("hold_position", "repeat_header"),
+    position      = "center",
+    font_size     = 11
+  ) %>%
+  ## add headers (column groups)
+  add_header_above(c(" " =1, "n=80" = 3, "n=90" = 3, "n=90" = 3)) %>%
+  ## 2nd header row: default variable names
+  row_spec(0, bold = TRUE) %>% 
+  # group rows 1–4 under “n = 80” and 5–8 under “n = 100”
+  pack_rows("No enhancement",  1, 1, bold = TRUE) %>%
+  pack_rows("CV",  2, 5, bold = TRUE) %>%
+  pack_rows("Naïve", 6, 9, bold = TRUE)
+
+
+newline()
+
+
+round(tab3,1) %>%
+  kable(
+    format    = "latex",
+    booktabs  = TRUE,
+    longtable = TRUE,
+    caption   = "Results of real data analysis using a more \\textbf{liberal} list of oracle DEGs. CV: GEDE models were developed with independent training data. Naïve: GEDE models were developed with the test data. All performance metrics are presented in percentage scale for better readability. ",
+    linesep   = ""         # remove extra lines between rows
+  ) %>%
+  kable_styling(
+    latex_options = c("hold_position", "repeat_header"),
+    position      = "center",
+    font_size     = 11
+  ) %>%
+  ## add headers (column groups)
+  add_header_above(c(" " =1, "n=80" = 3, "n=90" = 3, "n=90" = 3)) %>%
+  ## 2nd header row: default variable names
+  row_spec(0, bold = TRUE) %>% 
+  # group rows 1–4 under “n = 80” and 5–8 under “n = 100”
+  pack_rows("No enhancement",  1, 1, bold = TRUE) %>%
+  pack_rows("CV",  2, 5, bold = TRUE) %>%
+  pack_rows("Naïve", 6, 9, bold = TRUE)
+
+
+```
+
+From these additional results, we conclude that:
+
+1. The statistical power (TPR) for all methods are better when using a stringent list of oracle DEGs. This is because this smaller list of top DEGs all have larger effect sizes that are easier to detect.
+2. As the flip side of the same coin, in this case (using more stringent oracle DEGs), the type I error (FPR) of all methods are higher, because NDEGs may have large effect sizes. 
+3. The advantage of GEDE enhancement is best with the most stringent list of oracle DEGs. It seems to me that GEDE was able to make the data "sharper" by removing noise, therefore increase the statistical power of detecting those best DEGS. For DEGs with only weak effect sizes, the enhancement was not translated into higher power. 
+4. Fortunately, I think in almost all real world applications, the proportion of DEGs in all genes is less than 47% (the most liberal case). For most applications, this proportion is less than 31% (the intermediate case) and for many it is less than 17% (the most stringent case). Therefore, GEDE will have very good enhancement for the DE analysis for most realistic situations. 
+
